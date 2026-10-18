@@ -92,7 +92,9 @@ class YandeClient {
     } on TimeoutException {
       throw YandeException('连接站点超时（12 秒），请检查网络或代理设置');
     } on SocketException catch (e) {
-      final detail = e.message;
+      // e.message 常常自带句号（如「远程计算机拒绝网络连接。」），
+      // 直接接中文句号会出现「。。」，先剥掉尾部标点再拼。
+      final detail = e.message.replaceAll(RegExp(r'[。\.\s]+$'), '');
       throw YandeException('无法连接站点：$detail。请检查网络或代理设置');
     } on HandshakeException {
       throw YandeException('与站点的 TLS 握手失败，代理可能没有正确转发 HTTPS');

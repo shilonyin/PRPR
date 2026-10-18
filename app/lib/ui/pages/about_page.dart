@@ -59,7 +59,12 @@ class AboutPage extends StatelessWidget {
             style: textTheme.bodyMedium,
           ),
           const Divider(height: 40),
-          Text('致谢', style: AppTheme.sectionTitle(context)),
+          Row(
+            children: [
+              AppTheme.sectionAccent(context),
+              Text('致谢', style: AppTheme.sectionTitle(context)),
+            ],
+          ),
           const SizedBox(height: 8),
           const _Bullet('laplamgor — 原 PRPR 项目作者（2017–2020）。功能设计、交互流程与裁剪算法都来自他的 UWP 原版。'),
           const _Bullet('nagadomi — lbpcascade_animeface 级联模型（MIT，2011），人脸检测靠它。'),
@@ -67,7 +72,12 @@ class AboutPage extends StatelessWidget {
           const _Bullet('yande.re / konachan — 被支持的图站，请遵守各站的使用条款。'),
           const _Bullet('Flutter、Dart 及 pub 上的一切依赖。'),
           const Divider(height: 40),
-          Text('运行时信息', style: AppTheme.sectionTitle(context)),
+          Row(
+            children: [
+              AppTheme.sectionAccent(context),
+              Text('运行时信息', style: AppTheme.sectionTitle(context)),
+            ],
+          ),
           const SizedBox(height: 8),
           _kv(context, '站点', settings.host),
           _kv(context, '登录状态', settings.isLoggedIn ? '已登录（${settings.userName}）' : '未登录'),

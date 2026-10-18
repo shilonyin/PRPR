@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../../models/post.dart';
 import '../app_state.dart';
+import '../theme.dart';
 import '../widgets/post_grid.dart';
 import 'post_detail_page.dart';
 
@@ -41,21 +42,31 @@ class _FavoriteViewState extends State<FavoriteView> {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final settings = state.settings;
+    final theme = Theme.of(context);
 
     if (!settings.isLoggedIn) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(32),
+          padding: const EdgeInsets.all(AppTheme.gapXxl),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.lock_outline, size: 48),
-              const SizedBox(height: 12),
-              const Text('登录后才能看到自己的收藏'),
-              const SizedBox(height: 8),
+              Icon(
+                Icons.lock_outline,
+                size: AppTheme.iconXl,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(height: AppTheme.gapM),
+              Text(
+                '登录后才能看到自己的收藏',
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: AppTheme.gapS),
               Text(
                 '在「设置 → 账号」里填入站点用户名和密码。',
-                style: Theme.of(context).textTheme.bodySmall,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
                 textAlign: TextAlign.center,
               ),
             ],
@@ -77,13 +88,11 @@ class _FavoriteViewState extends State<FavoriteView> {
         children: [
           Expanded(
             child: Text(
-              '${
-                state.favoritePosts.length
-              } 张收藏',
-              style: Theme.of(context).textTheme.titleSmall,
+              '${state.favoritePosts.length} 张收藏',
+              style: AppTheme.sectionTitle(context),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: AppTheme.gapM),
           DropdownButton<int>(
             value: state.favoriteSortIndex,
             items: [
@@ -99,11 +108,11 @@ class _FavoriteViewState extends State<FavoriteView> {
               await _load();
             },
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: AppTheme.gapS),
           IconButton(
             tooltip: '刷新',
             onPressed: _load,
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh, size: AppTheme.iconSm),
           ),
         ],
       ),

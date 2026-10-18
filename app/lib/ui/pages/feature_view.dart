@@ -29,6 +29,11 @@ class FeatureView extends StatefulWidget {
 class _FeatureViewState extends State<FeatureView> {
   static const int _maxPages = 5;
 
+  /// 今日高分横排卡片的尺寸。宽度固定、高度由容器限死，
+  /// 这样不同比例的图在同一行里高度一致。
+  static const double _topCardWidth = 200;
+  static const double _topStripHeight = 280;
+
   DailyFeature? _feature;
   bool _loading = false;
   String? _error;
@@ -77,7 +82,7 @@ class _FeatureViewState extends State<FeatureView> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _error = '$e';
+          _error = AppState.describeError(e);
           _loading = false;
         });
       }
@@ -98,36 +103,22 @@ class _FeatureViewState extends State<FeatureView> {
       return const Center(child: CircularProgressIndicator());
     }
     if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.cloud_off, size: 48),
-              const SizedBox(height: 12),
-              Text(_error!, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              FilledButton(onPressed: _load, child: const Text('重试')),
-            ],
-          ),
-        ),
+      return _messageState(
+        icon: Icons.cloud_off_outlined,
+        title: '加载失败',
+        detail: _error!,
+        actionLabel: '重试',
+        actionIcon: Icons.refresh,
       );
     }
 
     final feature = _feature ?? DailyFeature.empty;
     if (feature.topToday.isEmpty && feature.featuredTags.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.today_outlined, size: 48),
-            const SizedBox(height: 12),
-            const Text('今天还没有新内容'),
-            const SizedBox(height: 16),
-            FilledButton(onPressed: _load, child: const Text('刷新')),
-          ],
-        ),
+      return _messageState(
+        icon: Icons.today_outlined,
+        title: '今天还没有新内容',
+        actionLabel: '刷新',
+        actionIcon: Icons.refresh,
       );
     }
 
@@ -138,27 +129,29 @@ class _FeatureViewState extends State<FeatureView> {
         children: [
           Row(
             children: [
+              AppTheme.sectionAccent(context),
               Expanded(
                 child: Text('今日高分', style: AppTheme.sectionTitle(context)),
               ),
               TextButton.icon(
                 onPressed: _load,
-                icon: const Icon(Icons.refresh, size: 18),
+                icon: const Icon(Icons.refresh, size: AppTheme.iconSm),
                 label: const Text('刷新'),
               ),
             ],
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppTheme.gapS),
           SizedBox(
-            height: 280,
+            height: _topStripHeight,
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               itemCount: feature.topToday.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 12),
+              separatorBuilder: (_, _) =>
+                  const SizedBox(width: AppTheme.gapM),
               itemBuilder: (context, index) {
                 final post = feature.topToday[index];
                 return SizedBox(
-                  width: 200,
+                  width: _topCardWidth,
                   child: Stack(
                     children: [
                       Positioned.fill(
@@ -169,9 +162,9 @@ class _FeatureViewState extends State<FeatureView> {
                         ),
                       ),
                       Positioned(
-                        left: 8,
-                        top: 8,
-                        child: _rankBadge(context, index + 1),
+                        left: AppTheme.gapS,
+                        top: AppTheme.gapS,
+                        child: _rankBadge(index + 1),
                       ),
                     ],
                   ),
@@ -179,15 +172,20 @@ class _FeatureViewState extends State<FeatureView> {
               },
             ),
           ),
-          const SizedBox(height: 28),
-          Text('值得一看的标签', style: AppTheme.sectionTitle(context)),
-          const SizedBox(height: 12),
+          const SizedBox(height: AppTheme.gapXl),
+          Row(
+            children: [
+              AppTheme.sectionAccent(context),
+              Text('值得一看的标签', style: AppTheme.sectionTitle(context)),
+            ],
+          ),
+          const SizedBox(height: AppTheme.gapM),
           if (feature.featuredTags.isEmpty)
             Text('今天没有出现两次以上的标签', style: AppTheme.hint(context))
           else
             Wrap(
-              spacing: 12,
-              runSpacing: 12,
+              spacing: AppTheme.gapM,
+              runSpacing: AppTheme.gapM,
               children: [
                 for (final tag in feature.featuredTags)
                   _TagCard(tag: tag, onOpen: _open),
@@ -198,17 +196,73 @@ class _FeatureViewState extends State<FeatureView> {
     );
   }
 
-  Widget _rankBadge(BuildContext context, int rank) {
+  /// 空态与错误态共用一套排版：以前两处各写一份，图标尺寸、间距、按钮
+  /// 都不一样，同一个页面的「没内容」和「加载失败」看起来像两个应用的。
+  Widget _messageState({
+    required IconData icon,
+    required String title,
+    String? detail,
+    required String actionLabel,
+    required IconData actionIcon,
+  }) {
+    final theme = Theme.of(context);
+    return Center(
+      child: ConstrainedBox(
+        // 与搜索页错误态同宽，两页的失败提示才不会一个宽一个窄。
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: Padding(
+          padding: const EdgeInsets.all(AppTheme.gapXxl),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: AppTheme.iconXl, color: theme.colorScheme.error),
+              const SizedBox(height: AppTheme.gapL),
+              Text(
+                title,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              if (detail != null) ...[
+                const SizedBox(height: AppTheme.gapS),
+                Text(
+                  detail,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+              const SizedBox(height: AppTheme.gapXl),
+              FilledButton.tonalIcon(
+                onPressed: _load,
+                icon: Icon(actionIcon, size: AppTheme.iconSm),
+                label: Text(actionLabel),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _rankBadge(int rank) {
     final color = switch (rank) {
       1 => const Color(0xFFD4A017),
       2 => const Color(0xFF9AA0A6),
       _ => const Color(0xFFB08D57),
     };
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTheme.gapS,
+        vertical: AppTheme.gapXs,
+      ),
       decoration: BoxDecoration(
         color: color,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(AppTheme.chipRadius),
       ),
       child: Text(
         'TOP $rank',
@@ -216,6 +270,7 @@ class _FeatureViewState extends State<FeatureView> {
           color: Colors.white,
           fontSize: 11,
           fontWeight: FontWeight.w700,
+          height: 1.2,
         ),
       ),
     );
@@ -234,6 +289,7 @@ class _TagCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return SizedBox(
       width: 180,
       child: Card(
@@ -253,16 +309,16 @@ class _TagCard extends StatelessWidget {
                   imageUrl: tag.cover.urlFor(PostImageVersion.preview),
                   fit: BoxFit.cover,
                   placeholder: (context, _) => ColoredBox(
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    color: theme.colorScheme.surfaceContainerHighest,
                   ),
                   errorWidget: (context, _, _) => ColoredBox(
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    color: theme.colorScheme.surfaceContainerHighest,
                     child: const Icon(Icons.broken_image_outlined),
                   ),
                 ),
               ),
               Padding(
-                padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                padding: const EdgeInsets.all(AppTheme.gapM),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -272,10 +328,12 @@ class _TagCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
-                    const SizedBox(height: 2),
+                    const SizedBox(height: AppTheme.gapXs),
                     Text(
                       '${tag.posts.length} 张',
-                      style: AppTheme.hint(context),
+                      style: AppTheme.hint(context)?.copyWith(
+                        fontFeatures: AppTheme.tabularFigures,
+                      ),
                     ),
                   ],
                 ),

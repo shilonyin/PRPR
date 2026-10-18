@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../models/post.dart';
 import '../app_state.dart';
+import '../theme.dart';
 import '../widgets/app_text_field.dart';
 import '../widgets/post_grid.dart';
 import 'post_detail_page.dart';
@@ -17,6 +18,9 @@ class _FocusSearchIntent extends Intent {
 ///
 /// 原版用 `SearchBox` 的 QuerySubmitted 触发 `HomeViewModel.SearchAsync`；
 /// 桌面端换成常驻输入框，回车或点按钮触发，并且支持 `Ctrl+K` 聚焦。
+///
+/// 搜索控件固定在内容区顶部，只有瀑布流滚动：桌面端换关键词是主操作，
+/// 滚到第五屏还得一路滚回顶部才能改，是可用性问题而不是观感问题。
 class SearchView extends StatefulWidget {
   const SearchView({super.key, this.initialQuery = ''});
 
@@ -121,16 +125,30 @@ class _SearchViewState extends State<SearchView> {
             },
           ),
         },
-        child: PostGrid(
-          posts: posts,
-          heroPrefix: 'search-',
-          hasMore: state.hasMoreFor(query),
-          isLoadingMore: state.isLoading,
-          emptyText: state.isLoading ? '正在加载…' : '没有找到符合条件的图片',
-          emptyBuilder: (context) => _emptyState(context, state),
-          onOpen: _open,
-          onLoadMore: () => state.loadMore(query),
-          header: _header(context, state),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                AppTheme.pagePadding,
+                AppTheme.pagePadding,
+                AppTheme.pagePadding,
+                AppTheme.gapM,
+              ),
+              child: _searchControls(context, state),
+            ),
+            Expanded(
+              child: PostGrid(
+                posts: posts,
+                heroPrefix: 'search-',
+                hasMore: state.hasMoreFor(query),
+                isLoadingMore: state.isLoading,
+                emptyText: state.isLoading ? '正在加载…' : '没有找到符合条件的图片',
+                emptyBuilder: (context) => _emptyState(context, state),
+                onOpen: _open,
+                onLoadMore: () => state.loadMore(query),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -147,14 +165,14 @@ class _SearchViewState extends State<SearchView> {
     if (state.isLoading) {
       return Center(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(
               width: 28,
               height: 28,
               child: CircularProgressIndicator(strokeWidth: 3),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: AppTheme.gapL),
             Text('正在加载…', style: theme.textTheme.bodyMedium),
           ],
         ),
@@ -162,73 +180,91 @@ class _SearchViewState extends State<SearchView> {
     }
 
     if (error != null) {
-      return Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.cloud_off_outlined,
-              size: 48,
-              color: theme.colorScheme.error,
+      // 标题 16/w600、具体错误与通用建议同为 12 但分两档色：原来三行只差
+      // 2px 同色同号，用户分不清哪句是「到底出了什么错」。
+      return Center(
+        child: ConstrainedBox(
+          // 420 会让「无法连接站点：远程计算机拒绝网络连接。请检查网络或代理设置」
+          // 折在最后一两个字上（实测「置」单独占一行），480 刚好放得下整句。
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: Padding(
+            padding: const EdgeInsets.all(AppTheme.gapXxl),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.cloud_off_outlined,
+                  size: AppTheme.iconXl,
+                  color: theme.colorScheme.error,
+                ),
+                const SizedBox(height: AppTheme.gapL),
+                Text(
+                  '加载失败',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: AppTheme.gapS),
+                Text(
+                  error,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center,
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: AppTheme.gapS),
+                Text(
+                  '如果是国内网络，请确认系统代理已开启',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant
+                        .withValues(alpha: 0.85),
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: AppTheme.gapXl),
+                FilledButton.tonalIcon(
+                  onPressed: () => state.search(state.query, force: true),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重试'),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            Text(
-              '加载失败',
-              style: theme.textTheme.titleSmall,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              error,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              textAlign: TextAlign.center,
-              maxLines: 4,
-              overflow: TextOverflow.ellipsis,
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '如果是国内网络，请确认系统代理已开启',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            FilledButton.tonalIcon(
-              onPressed: () => state.search(state.query, force: true),
-              icon: const Icon(Icons.refresh),
-              label: const Text('重试'),
-            ),
-          ],
+          ),
         ),
       );
     }
 
-    return Padding(
-      padding: const EdgeInsets.all(32),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.image_outlined,
-            size: 48,
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-          const SizedBox(height: 12),
-          Text(
-            '没有找到符合条件的图片',
-            style: theme.textTheme.bodyMedium,
-            textAlign: TextAlign.center,
-          ),
-        ],
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppTheme.gapXxl),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.image_outlined,
+              size: AppTheme.iconXl,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(height: AppTheme.gapL),
+            Text(
+              '没有找到符合条件的图片',
+              style: theme.textTheme.bodyMedium,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _header(BuildContext context, AppState state) {
+  /// 固定在顶部的搜索控件：输入行、说明行、最近搜索。
+  Widget _searchControls(BuildContext context, AppState state) {
     final loading = state.isLoading;
+    final theme = Theme.of(context);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -241,87 +277,76 @@ class _SearchViewState extends State<SearchView> {
                 onSubmitted: _submit,
                 textInputAction: TextInputAction.search,
                 hint: '输入标签搜索，最多 6 个（如 landscape sky）',
-                // 加载中把搜索图标换成进度圈，回车/点击后的反馈就在输入框里。
+                // 加载中把搜索图标换成进度圈：状态就地反馈，不再另外加
+                // 一条进度条和一个转圈的按钮图标（一屏四个圈，视线无处落）。
                 prefixIcon: loading
                     ? const Padding(
                         padding: EdgeInsets.all(13),
                         child: SizedBox(
-                          width: 16,
-                          height: 16,
+                          width: AppTheme.iconXs,
+                          height: AppTheme.iconXs,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         ),
                       )
-                    : const Icon(Icons.search, size: 20),
+                    : const Icon(Icons.search, size: AppTheme.iconSm),
                 suffixIcon: _controller.text.isEmpty
                     ? null
                     : IconButton(
                         tooltip: '清空',
-                        icon: const Icon(Icons.close, size: 20),
+                        icon: const Icon(Icons.close, size: AppTheme.iconSm),
                         onPressed: _clear,
                       ),
                 onChanged: (_) => setState(() {}),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: AppTheme.gapM),
             FilledButton.icon(
               onPressed: loading ? null : () => _submit(_controller.text),
-              icon: loading
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.search),
+              icon: const Icon(Icons.search),
               label: Text(loading ? '搜索中' : '搜索'),
             ),
           ],
         ),
-        // 搜索进行中的细进度条；不加载时高度归零，避免布局跳动。
-        SizedBox(
-          height: 3,
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
-            child: loading
-                ? ClipRRect(
-                    borderRadius: BorderRadius.circular(2),
-                    child: const LinearProgressIndicator(minHeight: 3),
-                  )
-                : const SizedBox.shrink(),
-          ),
-        ),
-        const SizedBox(height: 10),
+        const SizedBox(height: AppTheme.gapS),
         Row(
           children: [
             Expanded(
               child: Text(
                 '快捷键 Ctrl+K 聚焦搜索框。加 rating:s 只搜安全内容。',
-                style: Theme.of(context).textTheme.bodySmall,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
             ),
             if (postsCount(state) > 0)
               Text(
-                '共 ${totalCount(state)} 张',
-                style: Theme.of(context).textTheme.bodySmall,
+                '共 ${_formatCount(totalCount(state))} 张',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontFeatures: AppTheme.tabularFigures,
+                ),
               ),
           ],
         ),
         if (_recent.isNotEmpty) ...[
-          const SizedBox(height: 14),
+          const SizedBox(height: AppTheme.gapM),
           Row(
             children: [
               Icon(
                 Icons.history,
-                size: 16,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                size: AppTheme.iconXs,
+                color: theme.colorScheme.onSurfaceVariant,
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: AppTheme.gapS),
               Text(
                 '最近搜索',
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                style: theme.textTheme.labelLarge?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
               const Spacer(),
               TextButton(
@@ -330,21 +355,20 @@ class _SearchViewState extends State<SearchView> {
               ),
             ],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: AppTheme.gapXs),
+          // 去掉 avatar：标题已经有 history 图标了，chip 里再来一个是重复，
+          // 而且把 2 字搜索词撑出三个视觉元素。
           Wrap(
-            spacing: 8,
-            runSpacing: 8,
+            spacing: AppTheme.gapS,
+            runSpacing: AppTheme.gapS,
             children: [
               for (final q in _recent)
                 InputChip(
-                  avatar: const Icon(Icons.history, size: 16),
                   label: Text(q),
                   onPressed: () => _reuseRecent(q),
                   onDeleted: () => _removeRecent(q),
                   deleteButtonTooltipMessage: '移除「$q」',
-                  deleteIcon: const Icon(Icons.close, size: 16),
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  deleteIcon: const Icon(Icons.close, size: AppTheme.iconXs),
                 ),
             ],
           ),
@@ -356,4 +380,22 @@ class _SearchViewState extends State<SearchView> {
   int postsCount(AppState state) => state.postsFor(state.query).length;
 
   int totalCount(AppState state) => state.totalFor(state.query);
+
+  /// 把总数格式化成好读的形式：过万用「万」，否则加千分位。
+  ///
+  /// 不引入 intl：这里只需要两种形态，自己算比多一个依赖划算。
+  static String _formatCount(int total) {
+    if (total >= 10000) {
+      final wan = total / 10000;
+      final text = wan >= 100 ? wan.toStringAsFixed(0) : wan.toStringAsFixed(1);
+      return '$text 万';
+    }
+    final digits = total.toString();
+    final buffer = StringBuffer();
+    for (var i = 0; i < digits.length; i++) {
+      if (i > 0 && (digits.length - i) % 3 == 0) buffer.write(',');
+      buffer.write(digits[i]);
+    }
+    return buffer.toString();
+  }
 }

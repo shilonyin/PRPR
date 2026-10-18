@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../services/history_store.dart';
 import '../app_state.dart';
+import '../theme.dart';
 
 /// 换壁纸历史页。
 ///
@@ -18,6 +19,9 @@ class HistoryPage extends StatefulWidget {
 }
 
 class _HistoryPageState extends State<HistoryPage> {
+  /// 列表缩略图边长。分隔线的 indent 由它推出来，避免手写一个对不上的数。
+  static const double _thumbSize = 48;
+
   Future<void> _clear() async {
     final state = context.read<AppState>();
     final confirmed = await showDialog<bool>(
@@ -45,23 +49,29 @@ class _HistoryPageState extends State<HistoryPage> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+    final theme = Theme.of(context);
     final items = state.history.all;
 
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          padding: const EdgeInsets.fromLTRB(
+            AppTheme.pagePadding,
+            AppTheme.pagePadding,
+            AppTheme.pagePadding,
+            AppTheme.gapS,
+          ),
           child: Row(
             children: [
               Expanded(
                 child: Text(
                   '共 ${items.length} 条记录（最多保留 ${HistoryStore.maxEntries} 条）',
-                  style: Theme.of(context).textTheme.titleSmall,
+                  style: theme.textTheme.titleSmall,
                 ),
               ),
               TextButton.icon(
                 onPressed: items.isEmpty ? null : _clear,
-                icon: const Icon(Icons.delete_outline, size: 18),
+                icon: const Icon(Icons.delete_outline, size: AppTheme.iconSm),
                 label: const Text('清空'),
               ),
             ],
@@ -70,12 +80,24 @@ class _HistoryPageState extends State<HistoryPage> {
         const Divider(height: 1),
         Expanded(
           child: items.isEmpty
-              ? const Center(child: Text('还没有换过壁纸'))
+              ? Center(
+                  child: Text(
+                    '还没有换过壁纸',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                )
               : ListView.separated(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  padding: const EdgeInsets.symmetric(vertical: AppTheme.gapS),
                   itemCount: items.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1, indent: 72),
-                  itemBuilder: (context, index) => _HistoryRow(record: items[index]),
+                  // 分隔线从左图右侧起：16(pagePadding) + 48(图) + 8(gapS)。
+                  separatorBuilder: (_, _) => const Divider(
+                    height: 1,
+                    indent: AppTheme.pagePadding + _thumbSize + AppTheme.gapS,
+                  ),
+                  itemBuilder: (context, index) =>
+                      _HistoryRow(record: items[index]),
                 ),
         ),
       ],
@@ -90,6 +112,7 @@ class _HistoryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final time = DateTime.fromMillisecondsSinceEpoch(record.appliedAtUnix * 1000);
     final subtitle = StringBuffer()
       ..write('${time.year}-${_two(time.month)}-${_two(time.day)} ')
@@ -97,10 +120,10 @@ class _HistoryRow extends StatelessWidget {
 
     return ListTile(
       leading: ClipRRect(
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(AppTheme.chipRadius),
         child: SizedBox(
-          width: 48,
-          height: 48,
+          width: _HistoryPageState._thumbSize,
+          height: _HistoryPageState._thumbSize,
           child: Image.file(
             File(record.filePath),
             fit: BoxFit.cover,
@@ -114,10 +137,17 @@ class _HistoryRow extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text(subtitle.toString()),
+      subtitle: Text(
+        subtitle.toString(),
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+          fontFeatures: AppTheme.tabularFigures,
+        ),
+      ),
       trailing: Icon(
         record.success ? Icons.check_circle_outline : Icons.error_outline,
-        color: record.success ? null : Theme.of(context).colorScheme.error,
+        size: AppTheme.iconSm,
+        color: record.success ? null : theme.colorScheme.error,
       ),
     );
   }

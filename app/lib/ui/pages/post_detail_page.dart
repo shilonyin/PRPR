@@ -189,21 +189,31 @@ class _PostDetailPageState extends State<PostDetailPage> {
     if (url.isEmpty) {
       return const Center(child: Text('该图片没有可显示的版本'));
     }
+    final scheme = Theme.of(context).colorScheme;
     return ColoredBox(
-      color: Colors.black,
-      child: InteractiveViewer(
-        minScale: 0.5,
-        maxScale: 6,
-        child: Center(
-          child: Hero(
-            tag: '${widget.heroPrefix}${post.id}',
-            child: CachedNetworkImage(
-              imageUrl: url,
-              fit: BoxFit.contain,
-              placeholder: (context, _) =>
-                  const Center(child: CircularProgressIndicator()),
-              errorWidget: (context, _, _) => const Center(
-                child: Text('图片加载失败', style: TextStyle(color: Colors.white70)),
+      color: scheme.surfaceContainerLowest,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+          child: InteractiveViewer(
+            minScale: 0.5,
+            maxScale: 6,
+            child: Center(
+              child: Hero(
+                tag: '${widget.heroPrefix}${post.id}',
+                child: CachedNetworkImage(
+                  imageUrl: url,
+                  fit: BoxFit.contain,
+                  placeholder: (context, _) =>
+                      const Center(child: CircularProgressIndicator()),
+                  errorWidget: (context, _, _) => Center(
+                    child: Text(
+                      '图片加载失败',
+                      style: TextStyle(color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
@@ -217,9 +227,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
       padding: const EdgeInsets.all(AppTheme.pagePadding),
       children: [
         _versionPicker(),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTheme.gapL),
         _actionRow(),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTheme.gapL),
         _voteRow(),
         const Divider(height: 32),
         _infoSection(),
@@ -239,10 +249,15 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('画质', style: AppTheme.sectionTitle(context)),
-        const SizedBox(height: 8),
+        Row(
+          children: [
+            AppTheme.sectionAccent(context),
+            Text('画质', style: AppTheme.sectionTitle(context)),
+          ],
+        ),
+        const SizedBox(height: AppTheme.gapS),
         Wrap(
-          spacing: 8,
+          spacing: AppTheme.gapS,
           children: versions.map((entry) {
             final (version, label) = entry;
             final available = post.urlFor(version).isNotEmpty;
@@ -263,17 +278,22 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('操作', style: AppTheme.sectionTitle(context)),
-        const SizedBox(height: 8),
+        Row(
+          children: [
+            AppTheme.sectionAccent(context),
+            Text('操作', style: AppTheme.sectionTitle(context)),
+          ],
+        ),
+        const SizedBox(height: AppTheme.gapS),
         FilledButton.icon(
           onPressed: _busy ? null : _applyAsWallpaper,
           icon: const Icon(Icons.wallpaper_outlined),
           label: const Text('设为壁纸'),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: AppTheme.gapS),
         Wrap(
-          spacing: 8,
-          runSpacing: 8,
+          spacing: AppTheme.gapS,
+          runSpacing: AppTheme.gapS,
           children: [
             OutlinedButton.icon(
               onPressed: _busy ? null : _toggleFavorite,
@@ -296,13 +316,19 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Widget _voteRow() {
+    final scheme = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('评分', style: AppTheme.sectionTitle(context)),
-        const SizedBox(height: 8),
+        Row(
+          children: [
+            AppTheme.sectionAccent(context),
+            Text('评分', style: AppTheme.sectionTitle(context)),
+          ],
+        ),
+        const SizedBox(height: AppTheme.gapS),
         Wrap(
-          spacing: 8,
+          spacing: AppTheme.gapS,
           children: [
             for (final v in const [
               VoteType.great,
@@ -311,7 +337,19 @@ class _PostDetailPageState extends State<PostDetailPage> {
               VoteType.bad,
             ])
               ChoiceChip(
-                label: Text(v.label),
+                // 评分组带赞 / 踩图标，和上面同构的画质组区分开。
+                label: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _voteIcon(v),
+                      size: AppTheme.iconXs,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: AppTheme.gapXs),
+                    Text(v.label),
+                  ],
+                ),
                 selected: _currentVote == v,
                 onSelected: _busy ? null : (_) => _vote(v),
               ),
@@ -320,6 +358,16 @@ class _PostDetailPageState extends State<PostDetailPage> {
       ],
     );
   }
+
+  /// 投票类型对应的图标：正面用赞、负面用踩、「取消」用取消赞。
+  static IconData _voteIcon(VoteType v) => switch (v) {
+        VoteType.great || VoteType.good => Icons.thumb_up_alt_outlined,
+        VoteType.bad => Icons.thumb_down_alt_outlined,
+        _ => Icons.thumb_up_off_alt_outlined,
+      };
+
+  /// 资料区里这三行的值是数字，用等宽字体 + 等宽数字对齐。
+  static const Set<String> _monoValueLabels = {'尺寸', '体积', 'MD5'};
 
   Widget _infoSection() {
     final rows = <(String, String)>[
@@ -335,19 +383,35 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('资料', style: AppTheme.sectionTitle(context)),
-        const SizedBox(height: 8),
+        Row(
+          children: [
+            AppTheme.sectionAccent(context),
+            Text('资料', style: AppTheme.sectionTitle(context)),
+          ],
+        ),
+        const SizedBox(height: AppTheme.gapS),
         for (final (label, value) in rows)
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 3),
+            padding: const EdgeInsets.symmetric(vertical: 6),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 SizedBox(
-                  width: 56,
+                  width: AppTheme.labelColumnDetail,
                   child: Text(label, style: AppTheme.hint(context)),
                 ),
-                Expanded(child: SelectableText(value)),
+                Expanded(
+                  child: SelectableText(
+                    value,
+                    style: _monoValueLabels.contains(label)
+                        ? const TextStyle(
+                            fontFamily: 'Consolas',
+                            fontSize: 13,
+                            fontFeatures: AppTheme.tabularFigures,
+                          )
+                        : null,
+                  ),
+                ),
               ],
             ),
           ),
@@ -360,8 +424,13 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('标签', style: AppTheme.sectionTitle(context)),
-        const SizedBox(height: 8),
+        Row(
+          children: [
+            AppTheme.sectionAccent(context),
+            Text('标签', style: AppTheme.sectionTitle(context)),
+          ],
+        ),
+        const SizedBox(height: AppTheme.gapS),
         Wrap(
           spacing: 6,
           runSpacing: 6,
@@ -376,7 +445,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
               ),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppTheme.gapM),
         TextButton.icon(
           onPressed: () async {
             final url = post.detailUrl(host);

@@ -140,276 +140,306 @@ class _SettingsPageState extends State<SettingsPage> {
         AppTheme.pagePadding,
         48,
       ),
+      // 内容列限宽 880 并居中：1900 宽的显示器上，输入框拉满整行会让
+      // 标签和输入值离得太远，读一行要横跨半屏。
       children: [
-        _section(context, '站点', [
-          _textField(
-            controller: _hostController,
-            label: '站点地址',
-            hint: AppConstants.defaultHost,
-            helper: '支持 yande.re、konachan.com 等同构站点。改完点右侧应用。',
-            icon: Icons.language,
-            errorText: _hostError,
-            onChanged: (_) => _clearHostError(),
-            trailing: FilledButton(
-              onPressed: () {
-                final value = _hostController.text.trim();
-                if (value.isEmpty) {
-                  setState(() => _hostError = '站点地址不能为空');
-                  _toast('站点地址不能为空');
-                  return;
-                }
-                setState(() => _hostError = null);
-                settings.host = value.replaceAll(RegExp(r'/+$'), '');
-                _toast('已切换到 ${settings.host}');
-              },
-              child: const Text('应用'),
-            ),
-          ),
-          _textField(
-            controller: _saltController,
-            label: '密码哈希盐',
-            helper: '站点登录表单里的隐藏字段。yande 系站点默认值已填好，不用改。',
-            icon: Icons.vpn_key_outlined,
-            onChanged: (v) => settings.passwordHashSalt = v.trim(),
-          ),
-        ]),
-        _section(context, '账号', [
-          if (settings.isLoggedIn)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.account_circle_outlined),
-              title: Text(settings.userName ?? ''),
-              subtitle: Text('用户 ID：${settings.userId}'),
-              trailing: TextButton(
-                onPressed: () {
-                  settings.signOut();
-                  setState(() {});
-                  _toast('已退出登录');
-                },
-                child: const Text('退出登录'),
-              ),
-            )
-          else ...[
-            Text(
-              '只有登录后才能收藏、投票、看自己的收藏夹。密码不会被保存，'
-              '登录成功后本地只留 SHA1 哈希。',
-              style: AppTheme.hint(context),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+        Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 880),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(
-                  child: AppTextField(
-                    controller: _userController,
-                    label: '用户名',
-                    prefixIcon: const Icon(Icons.person_outline, size: 20),
-                    errorText: _userError,
-                    onChanged: (_) => _clearUserError(),
+                _section(context, '站点', [
+                  _textField(
+                    controller: _hostController,
+                    label: '站点地址',
+                    hint: AppConstants.defaultHost,
+                    helper: '支持 yande.re、konachan.com 等同构站点。改完点右侧应用。',
+                    icon: Icons.language,
+                    errorText: _hostError,
+                    onChanged: (_) => _clearHostError(),
+                    trailing: FilledButton(
+                      onPressed: () {
+                        final value = _hostController.text.trim();
+                        if (value.isEmpty) {
+                          setState(() => _hostError = '站点地址不能为空');
+                          _toast('站点地址不能为空');
+                          return;
+                        }
+                        setState(() => _hostError = null);
+                        settings.host = value.replaceAll(RegExp(r'/+$'), '');
+                        _toast('已切换到 ${settings.host}');
+                      },
+                      child: const Text('应用'),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: AppTextField(
-                    controller: _passwordController,
-                    label: '密码',
-                    prefixIcon: const Icon(Icons.lock_outline, size: 20),
-                    obscureText: true,
-                    errorText: _passwordError,
-                    onChanged: (_) => _clearPasswordError(),
-                    onSubmitted: (_) => _signIn(),
+                  _textField(
+                    controller: _saltController,
+                    label: '密码哈希盐',
+                    helper: '站点登录表单里的隐藏字段。yande 系站点默认值已填好，不用改。',
+                    icon: Icons.vpn_key_outlined,
+                    onChanged: (v) => settings.passwordHashSalt = v.trim(),
                   ),
-                ),
-                const SizedBox(width: 12),
-                // 输入框浮动标签占了一行，按钮跟着往下压一点才对得齐。
-                Padding(
-                  padding: const EdgeInsets.only(top: 6),
-                  child: FilledButton(
-                    onPressed: _signingIn ? null : _signIn,
-                    child: Text(_signingIn ? '登录中…' : '登录'),
+                ]),
+                _section(context, '账号', [
+                  if (settings.isLoggedIn)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.account_circle_outlined),
+                      title: Text(settings.userName ?? ''),
+                      subtitle: Text('用户 ID：${settings.userId}'),
+                      trailing: TextButton(
+                        onPressed: () {
+                          settings.signOut();
+                          setState(() {});
+                          _toast('已退出登录');
+                        },
+                        child: const Text('退出登录'),
+                      ),
+                    )
+                  else ...[
+                    Text(
+                      '只有登录后才能收藏、投票、看自己的收藏夹。密码不会被保存，'
+                      '登录成功后本地只留 SHA1 哈希。',
+                      style: AppTheme.hint(context),
+                    ),
+                    const SizedBox(height: 12),
+                    _textField(
+                      controller: _userController,
+                      label: '用户名',
+                      icon: Icons.person_outline,
+                      errorText: _userError,
+                      onChanged: (_) => _clearUserError(),
+                    ),
+                    _textField(
+                      controller: _passwordController,
+                      label: '密码',
+                      icon: Icons.lock_outline,
+                      obscureText: true,
+                      errorText: _passwordError,
+                      onChanged: (_) => _clearPasswordError(),
+                      onSubmitted: (_) => _signIn(),
+                    ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: FilledButton(
+                        onPressed: _signingIn ? null : _signIn,
+                        child: Text(_signingIn ? '登录中…' : '登录'),
+                      ),
+                    ),
+                  ],
+                ]),
+                _section(context, '换壁纸', [
+                  _dropdown<int>(
+                    label: '裁剪方式',
+                    value: settings.cropMethodIndex,
+                    items: <int, String>{
+                      for (final m in CropMethod.values) m.value: _cropLabel(m),
+                    },
+                    onChanged: (v) => settings.cropMethodIndex = v,
                   ),
-                ),
+                  _dropdown<int>(
+                    label: '画质',
+                    value: settings.qualityLevel,
+                    items: const <int, String>{
+                      0: '预览图（快，省流量）',
+                      1: 'JPEG 大图（平衡）',
+                      2: '原图（最清晰）',
+                    },
+                    onChanged: (v) => settings.qualityLevel = v,
+                  ),
+                  _dropdown<int>(
+                    label: '壁纸契合度',
+                    value: settings.fitMode,
+                    items: WallpaperService.fitModeLabels,
+                    onChanged: (v) => settings.fitMode = v,
+                  ),
+                  _slider(
+                    label: '随机范围',
+                    value: settings.shuffleWindow.toDouble(),
+                    min: 1,
+                    max: AppConstants.maxShuffleWindow.toDouble(),
+                    divisions: AppConstants.maxShuffleWindow - 1,
+                    display: '${settings.shuffleWindow} 张',
+                    onChanged: (v) => settings.shuffleWindow = v.round(),
+                  ),
+                  _textField(
+                    controller: _tagsController,
+                    label: '默认标签',
+                    hint: '例如 landscape sky',
+                    helper: '点「换一张壁纸」且没指定标签时用这串搜索。留空则从全站随机。',
+                    icon: Icons.tag,
+                    onChanged: (v) => settings.defaultTags = v.trim(),
+                  ),
+                ]),
+                _section(context, '自动换壁纸', [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('启用'),
+                    subtitle: const Text('程序运行期间按下面的间隔自动换'),
+                    value: settings.autoChangeEnabled,
+                    onChanged: (v) {
+                      settings.autoChangeEnabled = v;
+                      setState(() {});
+                    },
+                  ),
+                  _slider(
+                    label: '间隔',
+                    value: settings.autoChangeMinutes.toDouble().clamp(1, 1440),
+                    min: 1,
+                    max: 1440,
+                    divisions: 1439,
+                    display: _minutesLabel(settings.autoChangeMinutes),
+                    onChanged: settings.autoChangeEnabled
+                        ? (v) => settings.autoChangeMinutes = v.round()
+                        : null,
+                  ),
+                  if (settings.autoChangeEnabled)
+                    Text(
+                      '注意：只在程序开着的时候生效，关闭程序后不会再换。'
+                      '想要真正的后台定时，需要本机计划任务，那是另一个功能。',
+                      style: AppTheme.hint(context),
+                    ),
+                ]),
+                _section(context, '内容筛选', [
+                  const _SubHeader('分级'),
+                  _check(
+                    title: 'Safe',
+                    value: settings.filter.isFilterSafe,
+                    onChanged: (v) =>
+                        _patchFilter((f) => f.copyWith(isFilterSafe: v)),
+                  ),
+                  _check(
+                    title: 'Questionable',
+                    value: settings.filter.isFilterQuestionable,
+                    onChanged: (v) => _patchFilter(
+                      (f) => f.copyWith(isFilterQuestionable: v),
+                    ),
+                  ),
+                  _check(
+                    title: 'Explicit',
+                    value: settings.filter.isFilterExplicit,
+                    onChanged: (v) =>
+                        _patchFilter((f) => f.copyWith(isFilterExplicit: v)),
+                  ),
+                  const _SubHeader('方向'),
+                  _check(
+                    title: '横图',
+                    value: settings.filter.isFilterHorizontal,
+                    onChanged: (v) =>
+                        _patchFilter((f) => f.copyWith(isFilterHorizontal: v)),
+                  ),
+                  _check(
+                    title: '竖图',
+                    value: settings.filter.isFilterVertical,
+                    onChanged: (v) =>
+                        _patchFilter((f) => f.copyWith(isFilterVertical: v)),
+                  ),
+                  const _SubHeader('其他'),
+                  _check(
+                    title: '包含被隐藏的图片',
+                    subtitle: '站点标记为隐藏（hidden）的帖子',
+                    value: settings.filter.isFilterAllowHidden,
+                    onChanged: (v) =>
+                        _patchFilter((f) => f.copyWith(isFilterAllowHidden: v)),
+                  ),
+                  _check(
+                    title: '包含被挂起的图片',
+                    subtitle: '审核中的帖子（held）',
+                    value: settings.filter.isFilterAllowHeld,
+                    onChanged: (v) =>
+                        _patchFilter((f) => f.copyWith(isFilterAllowHeld: v)),
+                  ),
+                  const SizedBox(height: 12),
+                  _textField(
+                    controller: _blacklistController,
+                    label: '标签黑名单',
+                    // 左标签列已经写明字段含义，框内不再重复占位文案。
+                    hint: '',
+                    helper: '空格分隔。命中任一标签的图片不会出现在任何列表里。',
+                    icon: Icons.block,
+                    // 至少 3 行好读，最多 6 行后自己滚，避免黑名单太长把页面撑爆。
+                    minLines: 3,
+                    maxLines: 6,
+                    onChanged: (v) =>
+                        _patchFilter((f) => f.copyWith(tagBlacklist: v.trim())),
+                  ),
+                ]),
+                _section(context, '外观', [
+                  _dropdown<int>(
+                    label: '主题',
+                    value: settings.themeModeIndex,
+                    items: const <int, String>{0: '跟随系统', 1: '浅色', 2: '深色'},
+                    onChanged: (v) => settings.themeModeIndex = v,
+                  ),
+                ]),
+                _section(context, '关于', [
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.info_outline),
+                    title: const Text('关于 PRPR'),
+                    subtitle: const Text('版本、开源许可与致谢'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const AboutPage(),
+                      ),
+                    ),
+                  ),
+                ]),
               ],
             ),
-          ],
-        ]),
-        _section(context, '换壁纸', [
-          _dropdown<int>(
-            label: '裁剪方式',
-            value: settings.cropMethodIndex,
-            items: <int, String>{
-              for (final m in CropMethod.values) m.value: _cropLabel(m),
-            },
-            onChanged: (v) => settings.cropMethodIndex = v,
           ),
-          _dropdown<int>(
-            label: '画质',
-            value: settings.qualityLevel,
-            items: const <int, String>{
-              0: '预览图（快，省流量）',
-              1: 'JPEG 大图（平衡）',
-              2: '原图（最清晰）',
-            },
-            onChanged: (v) => settings.qualityLevel = v,
-          ),
-          _dropdown<int>(
-            label: '壁纸契合度',
-            value: settings.fitMode,
-            items: WallpaperService.fitModeLabels,
-            onChanged: (v) => settings.fitMode = v,
-          ),
-          _slider(
-            label: '随机范围',
-            value: settings.shuffleWindow.toDouble(),
-            min: 1,
-            max: AppConstants.maxShuffleWindow.toDouble(),
-            divisions: AppConstants.maxShuffleWindow - 1,
-            display: '${settings.shuffleWindow} 张',
-            onChanged: (v) => settings.shuffleWindow = v.round(),
-          ),
-          _textField(
-            controller: _tagsController,
-            label: '默认标签',
-            hint: '例如 landscape sky',
-            helper: '点「换一张壁纸」且没指定标签时用这串搜索。留空则从全站随机。',
-            icon: Icons.tag,
-            onChanged: (v) => settings.defaultTags = v.trim(),
-          ),
-        ]),
-        _section(context, '自动换壁纸', [
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('启用'),
-            subtitle: const Text('程序运行期间按下面的间隔自动换'),
-            value: settings.autoChangeEnabled,
-            onChanged: (v) {
-              settings.autoChangeEnabled = v;
-              setState(() {});
-            },
-          ),
-          _slider(
-            label: '间隔',
-            value: settings.autoChangeMinutes.toDouble().clamp(1, 1440),
-            min: 1,
-            max: 1440,
-            divisions: 1439,
-            display: _minutesLabel(settings.autoChangeMinutes),
-            onChanged: settings.autoChangeEnabled
-                ? (v) => settings.autoChangeMinutes = v.round()
-                : null,
-          ),
-          if (settings.autoChangeEnabled)
-            Text(
-              '注意：只在程序开着的时候生效，关闭程序后不会再换。'
-              '想要真正的后台定时，需要本机计划任务，那是另一个功能。',
-              style: AppTheme.hint(context),
-            ),
-        ]),
-        _section(context, '内容筛选', [
-          const _SubHeader('分级'),
-          _check(
-            title: 'Safe',
-            value: settings.filter.isFilterSafe,
-            onChanged: (v) => _patchFilter(
-              (f) => f.copyWith(isFilterSafe: v),
-            ),
-          ),
-          _check(
-            title: 'Questionable',
-            value: settings.filter.isFilterQuestionable,
-            onChanged: (v) => _patchFilter(
-              (f) => f.copyWith(isFilterQuestionable: v),
-            ),
-          ),
-          _check(
-            title: 'Explicit',
-            value: settings.filter.isFilterExplicit,
-            onChanged: (v) => _patchFilter(
-              (f) => f.copyWith(isFilterExplicit: v),
-            ),
-          ),
-          const _SubHeader('方向'),
-          _check(
-            title: '横图',
-            value: settings.filter.isFilterHorizontal,
-            onChanged: (v) => _patchFilter(
-              (f) => f.copyWith(isFilterHorizontal: v),
-            ),
-          ),
-          _check(
-            title: '竖图',
-            value: settings.filter.isFilterVertical,
-            onChanged: (v) => _patchFilter(
-              (f) => f.copyWith(isFilterVertical: v),
-            ),
-          ),
-          const _SubHeader('其他'),
-          _check(
-            title: '包含被隐藏的图片',
-            subtitle: '站点标记为隐藏（hidden）的帖子',
-            value: settings.filter.isFilterAllowHidden,
-            onChanged: (v) => _patchFilter(
-              (f) => f.copyWith(isFilterAllowHidden: v),
-            ),
-          ),
-          _check(
-            title: '包含被挂起的图片',
-            subtitle: '审核中的帖子（held）',
-            value: settings.filter.isFilterAllowHeld,
-            onChanged: (v) => _patchFilter(
-              (f) => f.copyWith(isFilterAllowHeld: v),
-            ),
-          ),
-          const SizedBox(height: 12),
-          AppTextField(
-            controller: _blacklistController,
-            label: '标签黑名单',
-            helper: '空格分隔。命中任一标签的图片不会出现在任何列表里。',
-            prefixIcon: const Icon(Icons.block, size: 20),
-            // 至少 3 行好读，最多 6 行后自己滚，避免黑名单太长把页面撑爆。
-            minLines: 3,
-            maxLines: 6,
-            onChanged: (v) => _patchFilter((f) => f.copyWith(tagBlacklist: v.trim())),
-          ),
-        ]),
-        _section(context, '外观', [
-          _dropdown<int>(
-            label: '主题',
-            value: settings.themeModeIndex,
-            items: const <int, String>{
-              0: '跟随系统',
-              1: '浅色',
-              2: '深色',
-            },
-            onChanged: (v) => settings.themeModeIndex = v,
-          ),
-        ]),
-        _section(context, '关于', [
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.info_outline),
-            title: const Text('关于 PRPR'),
-            subtitle: const Text('版本、开源许可与致谢'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const AboutPage()),
-            ),
-          ),
-        ]),
+        ),
       ],
     );
   }
 
+  /// 左标签列。所有左标签表单（文本框 / 下拉 / 滑块）共用同一个宽度，
+  /// 保证同一屏内标签文字起点都在 x=0，不再随控件类型左右跳。
+  Widget _label(BuildContext context, String text) => SizedBox(
+    width: AppTheme.labelColumnSettings,
+    child: Text(
+      text,
+      style: Theme.of(context).textTheme.bodyMedium
+          ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+    ),
+  );
+
+  /// 一个设置段：段标题 + 该段全部控件，整体装进一张浅底卡片。
+  ///
+  /// 8 个段都走这里，段与段之间统一 gapXl，卡片圆角/描边/底色也只在这里
+  /// 定义一次，避免各段自己写一套看起来差 1px 的边框。
   Widget _section(BuildContext context, String title, List<Widget> children) {
+    final scheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 28),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: AppTheme.sectionTitle(context)),
-          const SizedBox(height: 12),
-          ...children,
-        ],
+      padding: const EdgeInsets.only(bottom: AppTheme.gapXl),
+      child: Container(
+        padding: const EdgeInsets.all(AppTheme.gapL),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+          border: Border.all(
+            color: isDark ? const Color(0xFF26262F) : const Color(0xFFE8E8EF),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 竖条 + 标题：竖条用主题里的品牌色，段标题用 sectionTitle，
+            // 页面里不再出现任何颜色字面量。
+            Row(
+              children: [
+                AppTheme.sectionAccent(context),
+                Text(title, style: AppTheme.sectionTitle(context)),
+              ],
+            ),
+            const SizedBox(height: AppTheme.gapM),
+            ...children,
+          ],
+        ),
       ),
     );
   }
@@ -422,36 +452,45 @@ class _SettingsPageState extends State<SettingsPage> {
     String? errorText,
     IconData? icon,
     Widget? trailing,
+    bool obscureText = false,
+    int? minLines,
+    int maxLines = 1,
     ValueChanged<String>? onChanged,
     ValueChanged<String>? onSubmitted,
   }) {
-    final field = AppTextField(
-      controller: controller,
-      label: label,
-      hint: hint,
-      helper: helper,
-      errorText: errorText,
-      prefixIcon: icon == null ? null : Icon(icon, size: 20),
-      onChanged: onChanged,
-      onSubmitted: onSubmitted,
-    );
-    if (trailing == null) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 16),
-        child: field,
-      );
-    }
+    // 标签下沉到与输入框首行文字同高：输入框 contentPadding 上下各 14，
+    // 加上边框 1，文字中心大约在 14 + 10 = 24 处，标签行高 20，所以补 14。
+    const labelTopInset = 14.0;
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(child: field),
-          const SizedBox(width: 12),
           Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: trailing,
+            padding: const EdgeInsets.only(top: labelTopInset),
+            child: _label(context, label),
           ),
+          Expanded(
+            child: AppTextField(
+              controller: controller,
+              hint: hint ?? label,
+              helper: helper,
+              errorText: errorText,
+              prefixIcon: icon == null ? null : Icon(icon, size: 20),
+              obscureText: obscureText,
+              minLines: minLines,
+              maxLines: maxLines,
+              onChanged: onChanged,
+              onSubmitted: onSubmitted,
+            ),
+          ),
+          if (trailing != null) ...[
+            const SizedBox(width: 12),
+            Padding(
+              padding: const EdgeInsets.only(top: labelTopInset),
+              child: trailing,
+            ),
+          ],
         ],
       ),
     );
@@ -469,10 +508,7 @@ class _SettingsPageState extends State<SettingsPage> {
       padding: const EdgeInsets.only(bottom: 16),
       child: Row(
         children: [
-          SizedBox(
-            width: 120,
-            child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
-          ),
+          _label(context, label),
           Expanded(
             child: DropdownButtonFormField<T>(
               initialValue: safeValue,
@@ -507,10 +543,7 @@ class _SettingsPageState extends State<SettingsPage> {
       padding: const EdgeInsets.only(bottom: 12),
       child: Row(
         children: [
-          SizedBox(
-            width: 120,
-            child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
-          ),
+          _label(context, label),
           Expanded(
             child: Slider(
               value: value.clamp(min, max),
