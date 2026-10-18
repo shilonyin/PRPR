@@ -46,6 +46,11 @@ powershell -ExecutionPolicy Bypass -File tool\install.ps1
 
 ![错误页](../docs/screenshots/offline.png)
 
+关于页。应用图标是原 UWP 版那只白猫剪影，垫了一层与主题主色一致的圆角底板
+（原图是纯白透明底，不加底板在任务栏上看不见）。
+
+![关于页](../docs/screenshots/about.png)
+
 ## 交互动效
 
 动效不是装饰，是一套有数字的约定。所有时长与曲线都在 `lib/ui/theme.dart` 的 `AppTheme` 里：
@@ -170,6 +175,24 @@ lib/
 | 人脸级联文件 | `…\prpr\lbpcascade_animeface.xml`（首次运行从 assets 释放） |
 
 具体根目录由 `path_provider` 的 `getApplicationSupportDirectory()` 决定。
+
+## 图标
+
+应用图标是原 UWP 版的白猫剪影（`PRPR/Assets/Square44x44Logo.targetsize-256_altform-unplated.png`），
+但那张图是**纯白 + 全透明底**——原版靠系统磁贴底色透出剪影，桌面版没有这层，
+直接拿来当图标在任务栏上就是一片空白。
+
+所以 `app/tool/make_icon.py` 做了两步：垫一个与主题 seed（`0xFF5B6ABF`）同色的圆角底板，
+再按尺寸分档缩放剪影（16/20/24 用 0.86、32/40 用 0.80、48/64/72 用 0.74、更大用 0.68）——
+小尺寸不放大图案的话，方框和猫脸会糊成一团。
+
+脚本同时产出两样东西：`app/assets/app_logo.png`（512，界面里用）与
+`app/windows/runner/resources/app_icon.ico`（9 个尺寸，exe / 任务栏 / 快捷方式读它）。
+改配色或换图之后重跑一次即可：
+
+```
+python app/tool/make_icon.py
+```
 
 ## 已知限制
 

@@ -1,9 +1,12 @@
-﻿param(
+param(
   [string]$Exe = 'F:\PRPR\app\build\windows\x64\runner\Release\PRPR.exe',
   [int]$Wait = 8,
   [string]$Out = 'F:\PRPR\shot.png',
   [int[][]]$Clicks = @(),
   [int]$AfterClick = 6,
+  [int]$Scroll = 0,
+  [int[]]$ScrollAt = @(900, 700),
+  [int]$AfterScroll = 2,
   [switch]$Keep,
   [switch]$NoProxy,
   [switch]$DeadProxy
@@ -22,6 +25,7 @@ public class PrprWin {
   [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 }
 "@
 # 必须先把所有大小写的代理变量删干净再设。
@@ -86,6 +90,28 @@ if ($Clicks.Count -gt 0) {
     Start-Sleep -Milliseconds 600
   }
   Start-Sleep -Seconds $AfterClick
+}
+
+# 滚轮到页面底部（用来截长页面的下半部分）。走 WM_MOUSEWHEEL 而不是
+# mouse_event(MOUSEEVENTF_WHEEL)：后者依赖光标下正好是目标窗口，窗口一旦被别的
+# 东西抢焦点就滚到别处去了；直接给窗口发消息不受焦点影响。
+# lParam 是屏幕坐标（低 16 位 x、高 16 位 y），wParam 高 16 位是带符号的滚动量。
+if ($Scroll -ne 0) {
+  $sr = Get-VisibleRect $h
+  $sx = $sr.Left + $ScrollAt[0]
+  $sy = $sr.Top + $ScrollAt[1]
+  [void][PrprWin]::SetCursorPos($sx, $sy)
+  Start-Sleep -Milliseconds 300
+  $lParam = [IntPtr](($sy -shl 16) -bor ($sx -band 0xFFFF))
+  # 每一格固定滚 120（Windows 的一个滚动单位）。
+  # 别写成 (-120 * $Scroll) -shl 16 一次性放大：高 16 位是带符号 int16，
+  # 乘几倍之后就溢出，截断后变成一个方向都对的垃圾值，页面一格都不动。
+  $wParam = [IntPtr]((-120 -shl 16) -band 0xFFFFFFFF)
+  for ($i = 0; $i -lt $Scroll; $i++) {
+    [void][PrprWin]::SendMessage($h, 0x020A, $wParam, $lParam)
+    Start-Sleep -Milliseconds 45
+  }
+  Start-Sleep -Seconds $AfterScroll
 }
 
 $r = Get-VisibleRect $h

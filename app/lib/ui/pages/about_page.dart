@@ -28,9 +28,9 @@ class AboutPage extends StatelessWidget {
           Row(
             children: [
               ClipRRect(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(AppTheme.cardRadius),
                 child: Image.asset(
-                  'assets/usericon.png',
+                  'assets/app_logo.png',
                   width: 64,
                   height: 64,
                   errorBuilder: (context, _, _) => const SizedBox(
@@ -92,7 +92,11 @@ class AboutPage extends StatelessWidget {
               context: context,
               applicationName: 'PRPR',
               applicationVersion: version,
-              applicationIcon: const Icon(Icons.wallpaper),
+              applicationIcon: Image.asset(
+                'assets/app_logo.png',
+                width: 48,
+                height: 48,
+              ),
             ),
           ),
         ],
