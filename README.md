@@ -23,7 +23,8 @@ MIT 许可证要求分发时保留版权声明，完整原文就写在级联文�
 ## 致谢
 
 - **nagadomi** — 上面那个人脸级联模型。没有它，「不切脸裁剪」就只能靠猜。
-- **shilonyin** — 原 PRPR 项目作者，功能设计、交互流程与裁剪算法都来自他的 UWP 原版。
+- **laplamgor** — 原 PRPR 项目作者（2017–2020），功能设计、交互流程与裁剪算法都来自他的 UWP 原版。
+- **shilonyin** — 本仓库维护者，Flutter 桌面版由他重写与维护。
 - **yande.re / konachan** — 图片、标签、评分与每日榜单的来源，以及给它们打标签的社区志愿者。
 - **OpenCV** 与 Dart 绑定 [opencv_dart](https://github.com/rainyl/opencv_dart) — 图像处理与级联推理。
 - **Flutter / Dart** 及 pub 上的各第三方包，许可证全文可在应用内「关于 → 开源许可」查看。

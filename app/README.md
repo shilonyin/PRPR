@@ -1,7 +1,8 @@
 # PRPR (Flutter 重写版)
 
-原 `shilonyin/PRPR` 是一个 UWP 版的 Moebooru（yande.re / konachan）壁纸客户端。
-应用被微软从商店下架、上游停更近五年之后，这个目录是它的 **Flutter 桌面重写版**。
+原 [`laplamgor/PRPR`](https://github.com/laplamgor/PRPR) 是一个 UWP 版的 Moebooru（yande.re / konachan）
+壁纸客户端，2017 年起开发、2021 年停更，应用也已被微软从商店下架。
+本仓库是它的 fork，由 shilonyin 维护；这个目录是 **Flutter 桌面重写版**。
 
 这一版只面向 **Windows 桌面**，把原版真正被人使用的部分保留下来：
 
