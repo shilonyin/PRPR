@@ -46,6 +46,43 @@ powershell -ExecutionPolicy Bypass -File tool\install.ps1
 
 ![错误页](../docs/screenshots/offline.png)
 
+## 交互动效
+
+动效不是装饰，是一套有数字的约定。所有时长与曲线都在 `lib/ui/theme.dart` 的 `AppTheme` 里：
+
+| token | 值 | 用途 |
+| --- | --- | --- |
+| `durMicro` | 90ms | 按下 / 抬起 |
+| `durFast` | 140ms | 图标、遮罩、chip |
+| `durBase` | 180ms | 切页内容、标题 |
+| `durMed` | 220ms | 图片渐显、侧栏、状态切换 |
+| `durSlow` | 260ms | 页面转场、换画质、列表新行 |
+| `durTask` | 400ms | 长任务分段进度 |
+
+曲线只有三条：`curveIn = easeOutCubic`、`curveOut = easeInCubic`、`curveEmph = easeInOutCubic`。
+超过 240ms 的微交互不用；回弹全应用只允许两处（换壁纸成功胶囊、收藏心跳）。
+
+几个刻意做成这样的地方：
+
+- **换壁纸的反馈在 AppBar 右侧的「任务胶囊」**：七段分段进度 + 阶段文案，
+  不用百分比（各阶段耗时从 200ms 到 3s 不等，画百分比只会骗人）。
+  成功 morph 成绿色胶囊，3 秒自动收起；失败变可点击重试。
+- **首屏是骨架网格**，并且只有一个 `AnimationController` 驱动全部占位块 ——
+  每张卡各转一个进度圈意味着同屏 30 个 ticker。
+- **成功类操作不弹提示条**：设置项在右上角闪「已保存」，复制/收藏/投票把图标临时换成勾，
+  只有失败才用 `AppToast.error`，而它会先 `hideCurrentSnackBar`，不会堆叠。
+- **切页不做整页重建**：保留 `IndexedStack`（否则搜索词、滚动位置、焦点全丢），
+  只在外面套一次性淡入 + 8px 上浮，AppBar 标题比主体快 40ms。
+- **侧栏折叠**用 `AnimatedContainer` 控宽 236 ↔ 80，内部 `ClipRect + OverflowBox`
+  把 rail 固定在 236 宽 —— `NavigationRail` 的 `extended` 切换会在一帧内改变宽度和布局，
+  任何补间都盖不住。
+
+长时间操作不在 UI isolate 上跑：设置壁纸（win32 FFI + 注册表）和人脸检测（OpenCV 级联）
+都通过 `Isolate.run` 放到后台，否则进度指示器自己就在掉帧。
+
+键盘：`Ctrl+1..5` 切页、`Ctrl+K` 聚焦搜索、`Ctrl+Enter` 换壁纸、`F5`/`Ctrl+R` 刷新、
+`Esc` 返回；瓦片支持 Tab 聚焦 + 方向键 + Enter。
+
 ## 运行要求
 
 | 依赖 | 版本 | 说明 |

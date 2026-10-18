@@ -213,8 +213,10 @@ class WallpaperEngine {
 
       // ---------- 5. 应用 ----------
       stage(ChangeStage.applying);
-      final applied =
-          _wallpaper.setWallpaper(croppedPath, fitMode: settings.fitMode);
+      final applied = await _wallpaper.setWallpaperAsync(
+        croppedPath,
+        fitMode: settings.fitMode,
+      );
 
       final ok = applied.isSuccess;
 
@@ -416,12 +418,20 @@ class WallpaperEngine {
   }
 
   /// 用指定帖子直接设壁纸（用户点「设为壁纸」时走这里，不随机）。
-  Future<ChangeResult> applyPost(Post post) async {
+  ///
+  /// [onStage] 与 [changeWallpaper] 同义：详情页也要能让用户看到走到了哪一步，
+  /// 否则点了按钮之后除了按钮变灰没有任何反馈。
+  Future<ChangeResult> applyPost(
+    Post post, {
+    void Function(ChangeStage stage)? onStage,
+  }) async {
     if (_busy) {
       return const ChangeResult(success: false, message: '上一次更换尚未完成');
     }
     _busy = true;
+    void stage(ChangeStage s) => onStage?.call(s);
     try {
+      stage(ChangeStage.downloading);
       final version = _versionForQuality(settings.qualityLevel);
       final url = post.urlFor(version);
       if (url.isEmpty) {
@@ -444,9 +454,11 @@ class WallpaperEngine {
 
       var faces = const <Rect>[];
       if (method == CropMethod.mostFaces || method == CropMethod.biggestFace) {
+        stage(ChangeStage.detecting);
         faces = await _detectFaces(bytes, imageSize);
       }
 
+      stage(ChangeStage.cropping);
       final cropRect =
           CropCalculator.compute(method, imageSize, screen, faces: faces);
 
@@ -468,7 +480,11 @@ class WallpaperEngine {
         await File(croppedPath).writeAsBytes(cropped, flush: true);
       }
 
-      final applied = _wallpaper.setWallpaper(croppedPath, fitMode: settings.fitMode);
+      stage(ChangeStage.applying);
+      final applied = await _wallpaper.setWallpaperAsync(
+        croppedPath,
+        fitMode: settings.fitMode,
+      );
       final ok = applied.isSuccess;
 
       await history.add(HistoryRecord(
@@ -480,6 +496,8 @@ class WallpaperEngine {
         success: ok,
         message: ok ? null : applied.message,
       ));
+
+      stage(ChangeStage.done);
 
       return ChangeResult(
         success: ok,

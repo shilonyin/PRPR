@@ -1,4 +1,5 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -6,7 +7,9 @@ import '../../models/post.dart';
 import '../../services/daily_feature.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import '../widgets/app_route.dart';
 import '../widgets/post_tile.dart';
+import '../widgets/state_message.dart';
 import 'post_detail_page.dart';
 
 /// 每日精选。对应原 UWP `FeatureView` + `FeatureViewModel`。
@@ -38,10 +41,34 @@ class _FeatureViewState extends State<FeatureView> {
   bool _loading = false;
   String? _error;
 
+  /// 首页发来的「刷新当前页」信号（F5 / Ctrl+R）。
+  ValueNotifier<int>? _refreshTick;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final tick = context.read<AppState>().refreshTick;
+    if (identical(_refreshTick, tick)) return;
+    _refreshTick?.removeListener(_onRefreshRequested);
+    _refreshTick = tick..addListener(_onRefreshRequested);
+  }
+
+  @override
+  void dispose() {
+    _refreshTick?.removeListener(_onRefreshRequested);
+    super.dispose();
+  }
+
+  void _onRefreshRequested() {
+    if (!mounted) return;
+    if (context.read<AppState>().currentTab != 1) return;
+    _load();
   }
 
   Future<void> _load() async {
@@ -91,7 +118,7 @@ class _FeatureViewState extends State<FeatureView> {
 
   void _open(Post post) {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
+      appPageRoute<void>(
         builder: (_) => PostDetailPage(post: post, heroPrefix: 'feature-'),
       ),
     );
@@ -99,26 +126,49 @@ class _FeatureViewState extends State<FeatureView> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
+    // 三种状态之间都走 [StateMessageSwitcher]：精选页要连翻最多 5 页，
+    // 首次加载到内容是这里最长的一段等待，硬切会让等待显得更长。
+    final feature = _feature ?? DailyFeature.empty;
+    final isEmpty =
+        feature.topToday.isEmpty && feature.featuredTags.isEmpty;
+
     if (_error != null) {
-      return _messageState(
-        icon: Icons.cloud_off_outlined,
-        title: '加载失败',
-        detail: _error!,
-        actionLabel: '重试',
-        actionIcon: Icons.refresh,
+      return StateMessageSwitcher(
+        stateKey: 'error',
+        child: StateMessage(
+          icon: Icons.cloud_off_outlined,
+          iconColor: Theme.of(context).colorScheme.error,
+          title: '加载失败',
+          detail: _error!,
+          hint: '如果是国内网络，请确认系统代理已开启',
+          actionLabel: '重试',
+          actionIcon: Icons.refresh,
+          busy: _loading,
+          onAction: _load,
+        ),
       );
     }
 
-    final feature = _feature ?? DailyFeature.empty;
-    if (feature.topToday.isEmpty && feature.featuredTags.isEmpty) {
-      return _messageState(
-        icon: Icons.today_outlined,
-        title: '今天还没有新内容',
-        actionLabel: '刷新',
-        actionIcon: Icons.refresh,
+    // 首次加载走骨架：精选页要连翻页，纯转圈的等待感比搜索页更强。
+    if (_loading && isEmpty) {
+      return StateMessageSwitcher(
+        stateKey: 'skeleton',
+        child: const SkeletonGrid(tileCount: 12),
+      );
+    }
+
+    if (isEmpty) {
+      return StateMessageSwitcher(
+        stateKey: 'empty',
+        child: StateMessage(
+          icon: Icons.today_outlined,
+          title: '今天还没有新内容',
+          hint: '站点今天还没有人上传，过一会儿再来看看。',
+          actionLabel: '刷新',
+          actionIcon: Icons.refresh,
+          busy: _loading,
+          onAction: _load,
+        ),
       );
     }
 
@@ -141,36 +191,11 @@ class _FeatureViewState extends State<FeatureView> {
             ],
           ),
           const SizedBox(height: AppTheme.gapS),
-          SizedBox(
+          _TopStrip(
+            posts: feature.topToday,
             height: _topStripHeight,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: feature.topToday.length,
-              separatorBuilder: (_, _) =>
-                  const SizedBox(width: AppTheme.gapM),
-              itemBuilder: (context, index) {
-                final post = feature.topToday[index];
-                return SizedBox(
-                  width: _topCardWidth,
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: PostTile(
-                          post: post,
-                          heroPrefix: 'feature-',
-                          onTap: () => _open(post),
-                        ),
-                      ),
-                      Positioned(
-                        left: AppTheme.gapS,
-                        top: AppTheme.gapS,
-                        child: _rankBadge(index + 1),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
+            cardWidth: _topCardWidth,
+            onOpen: _open,
           ),
           const SizedBox(height: AppTheme.gapXl),
           Row(
@@ -196,53 +221,169 @@ class _FeatureViewState extends State<FeatureView> {
     );
   }
 
-  /// 空态与错误态共用一套排版：以前两处各写一份，图标尺寸、间距、按钮
-  /// 都不一样，同一个页面的「没内容」和「加载失败」看起来像两个应用的。
-  Widget _messageState({
-    required IconData icon,
-    required String title,
-    String? detail,
-    required String actionLabel,
-    required IconData actionIcon,
-  }) {
-    final theme = Theme.of(context);
-    return Center(
-      child: ConstrainedBox(
-        // 与搜索页错误态同宽，两页的失败提示才不会一个宽一个窄。
-        constraints: const BoxConstraints(maxWidth: 480),
-        child: Padding(
-          padding: const EdgeInsets.all(AppTheme.gapXxl),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, size: AppTheme.iconXl, color: theme.colorScheme.error),
-              const SizedBox(height: AppTheme.gapL),
-              Text(
-                title,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: theme.colorScheme.onSurface,
-                ),
-              ),
-              if (detail != null) ...[
-                const SizedBox(height: AppTheme.gapS),
-                Text(
-                  detail,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
+}
+
+
+/// 今日高分的横向条。
+///
+/// 桌面上横向列表最大的问题是「看不出来还能往右」：鼠标没有横滚手势，
+/// 滚轮默认只作用于纵向，用户要么去够滚动条，要么以为只有三张。
+/// 这里给左右箭头，并在到边时自动淡出——能滚就是能滚，滚到头就不再暗示。
+class _TopStrip extends StatefulWidget {
+  const _TopStrip({
+    required this.posts,
+    required this.height,
+    required this.cardWidth,
+    required this.onOpen,
+  });
+
+  final List<Post> posts;
+  final double height;
+  final double cardWidth;
+  final void Function(Post post) onOpen;
+
+  @override
+  State<_TopStrip> createState() => _TopStripState();
+}
+
+class _TopStripState extends State<_TopStrip> {
+  final ScrollController _controller = ScrollController();
+
+  /// 一屏大概是「卡片宽 + 间距」，箭头一次推一屏而不是一张。
+  double get _pageStep => (widget.cardWidth + AppTheme.gapM) * 2;
+
+  bool _canBack = false;
+  bool _canForward = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_syncArrows);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncArrows());
+  }
+
+  @override
+  void didUpdateWidget(covariant _TopStrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.posts.length != widget.posts.length) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _syncArrows());
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_syncArrows);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _syncArrows() {
+    if (!mounted || !_controller.hasClients) return;
+    final pos = _controller.position;
+    final back = pos.pixels > 1;
+    final forward = pos.pixels < pos.maxScrollExtent - 1;
+    if (back == _canBack && forward == _canForward) return;
+    setState(() {
+      _canBack = back;
+      _canForward = forward;
+    });
+  }
+
+  void _scrollBy(double delta) {
+    if (!_controller.hasClients) return;
+    final target = (_controller.position.pixels + delta)
+        .clamp(0.0, _controller.position.maxScrollExtent);
+    _controller.animateTo(
+      target,
+      duration: AppTheme.durSlow,
+      curve: AppTheme.curveIn,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: widget.height,
+      child: Stack(
+        children: [
+          // 鼠标拖动也能滚：桌面用户习惯「按住拖」，不是所有人都会用滚轮。
+          ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context).copyWith(
+              dragDevices: const {
+                PointerDeviceKind.touch,
+                PointerDeviceKind.mouse,
+                PointerDeviceKind.trackpad,
+                PointerDeviceKind.stylus,
+              },
+            ),
+            child: ListView.separated(
+              controller: _controller,
+              scrollDirection: Axis.horizontal,
+              padding: EdgeInsets.zero,
+              itemCount: widget.posts.length,
+              separatorBuilder: (_, _) => const SizedBox(width: AppTheme.gapM),
+              itemBuilder: (context, index) {
+                final post = widget.posts[index];
+                return SizedBox(
+                  width: widget.cardWidth,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: PostTile(
+                          post: post,
+                          heroPrefix: 'feature-',
+                          onTap: () => widget.onOpen(post),
+                        ),
+                      ),
+                      Positioned(
+                        left: AppTheme.gapS,
+                        top: AppTheme.gapS,
+                        child: _rankBadge(index + 1),
+                      ),
+                    ],
                   ),
-                  textAlign: TextAlign.center,
-                  maxLines: 4,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-              const SizedBox(height: AppTheme.gapXl),
-              FilledButton.tonalIcon(
-                onPressed: _load,
-                icon: Icon(actionIcon, size: AppTheme.iconSm),
-                label: Text(actionLabel),
-              ),
-            ],
+                );
+              },
+            ),
+          ),
+          _arrow(
+            alignment: Alignment.centerLeft,
+            visible: _canBack,
+            icon: Icons.chevron_left,
+            onTap: () => _scrollBy(-_pageStep),
+          ),
+          _arrow(
+            alignment: Alignment.centerRight,
+            visible: _canForward,
+            icon: Icons.chevron_right,
+            onTap: () => _scrollBy(_pageStep),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _arrow({
+    required Alignment alignment,
+    required bool visible,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Align(
+      alignment: alignment,
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: AnimatedOpacity(
+          opacity: visible ? 1 : 0,
+          duration: AppTheme.durFast,
+          curve: AppTheme.curveIn,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AppTheme.gapS),
+            child: IconButton.filledTonal(
+              onPressed: onTap,
+              tooltip: alignment == Alignment.centerLeft ? '上一组' : '下一组',
+              icon: Icon(icon, size: AppTheme.iconSm),
+            ),
           ),
         ),
       ),

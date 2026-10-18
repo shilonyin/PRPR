@@ -167,3 +167,42 @@ AXTree 报错照样 7~13 条），原因是消息根本没经过那条路径。�
 **代价**：屏幕阅读器等辅助技术读不到本应用的内容。对一个以图片为主的壁纸工具是可接受的取舍。
 上游修好后（`flutter/flutter#175041` 关闭、或 `accessibility_bridge.cc:229` 出现空指针判断），
 删掉这段子类化即可恢复无障碍支持。
+
+## 交互动效约定
+
+原版 UWP 的动画基本由系统控件自带（`Pivot`、`ListView` 的默认过渡），迁移到 Flutter 后
+这些默认值在桌面端要么缺失、要么互相打架。这一轮把动效当成一件有规则的事来做：
+
+**时长与曲线只有一套 token**（`app/lib/ui/theme.dart`）：`durMicro` 90ms（按下）、
+`durFast` 140ms（图标、遮罩、chip）、`durBase` 180ms（切页内容、标题）、`durMed` 220ms
+（图片渐显、侧栏、状态切换）、`durSlow` 260ms（页面转场、换画质、列表新行）、`durTask` 400ms
+（长任务）；曲线 `curveIn = easeOutCubic` / `curveOut = easeInCubic` / `curveEmph = easeInOutCubic`。
+超过 240ms 的微交互一律砍掉，回弹（overshoot）全应用只允许两处：换壁纸成功胶囊与收藏心跳。
+
+**反馈给在真正发生事情的地方**：
+
+- 换壁纸是唯一的长任务，AppBar 右侧用「任务胶囊」显示七段分段进度（各阶段耗时不可知，
+  画精确百分比只会骗人），成功 morph 成绿色胶囊后 3 秒自动收起，失败变可点击重试。
+- 设置项写完盘在右上角闪一下「已保存」，不再弹 SnackBar；只有失败才用提示条，且只有一条。
+- 复制链接、复制标签、收藏、投票这类动作不弹提示，改成图标临时变勾 1.2 秒、收藏按钮心跳一次。
+- 首屏加载是骨架网格而不是居中转圈，且**只用一个 ticker** 驱动全部占位块 ——
+  30 张卡各转一个圈等于 30 个 ticker，滚动必然掉帧。
+
+**不该动的地方别动**：瀑布流不做逐张入场（`SliverMasonryGrid` 没有 item 动画钩子，
+滚轮一滚就跳到第 40 张）；瓦片悬停不做放大（列宽固定，放大只能 `Transform`，会压到邻居）；
+`InteractiveViewer` 的缩放不加补间（必须 1:1 跟手）；窗口 resize 过程中不做布局动画。
+
+**长任务移出 UI isolate**（`app/lib/services/`）：
+
+- `WallpaperService.setWallpaperAsync` 把 win32 FFI + 注册表写入放进 `Isolate.run`，
+  用静态函数 + 记录参数传参，避免闭包捕获 `this` 把整个 service 搬过去。
+- `AnimeFaceDetector.detectFromBytes` 把 OpenCV 级联检测放进后台 isolate，跨 isolate 传
+  `Float64List`（每 4 个 double 一组）而不是 `List<Rect>` —— `dart:ui` 的 `Rect` 没有跨 isolate
+  的文档保证。`rootBundle` / `path_provider` 在后台 isolate 不可用，级联文件路径由主 isolate
+  先算好再传进去。
+- `_decodeSize` / `_decodeResized` / `_cropImage` 只能留在主 isolate（`dart:ui` 的
+  `instantiateImageCodec` 与 `PictureRecorder` 不支持在后台 isolate 使用），这部分开销
+  靠「先显示预览图、再让原图淡入」来掩盖。
+
+**键盘**：`Ctrl+1..5` 切页、`Ctrl+K` 聚焦搜索框、`Ctrl+Enter` 换壁纸、`F5` / `Ctrl+R`
+刷新当前页、`Esc` 关详情页；瓦片可用 Tab 聚焦、方向键移动、Enter/空格打开。

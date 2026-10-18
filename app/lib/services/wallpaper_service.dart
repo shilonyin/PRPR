@@ -1,5 +1,6 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 import 'package:win32/win32.dart';
@@ -68,6 +69,31 @@ class WallpaperService {
     } finally {
       calloc.free(pathPtr);
     }
+  }
+
+  /// 异步版：把注册表写入与 `SystemParametersInfo` 挪到后台 isolate。
+  ///
+  /// 这两步都是同步 FFI，在主 isolate 上执行会阻塞一帧到数百毫秒 ——
+  /// 偏偏它们是「正在设置壁纸」这个阶段的最后一步，用户正盯着进度看，
+  /// 卡住的就是进度本身。win32 的 FFI 在后台 isolate 可用（已用探针验证），
+  /// 所以直接 `Isolate.run`。返回值是枚举，可跨 isolate 传递。
+  Future<WallpaperResult> setWallpaperAsync(
+    String imagePath, {
+    int fitMode = fitFill,
+  }) async {
+    if (!Platform.isWindows) return WallpaperResult.unsupportedPlatform;
+    if (!File(imagePath).existsSync()) return WallpaperResult.fileMissing;
+    return Isolate.run(
+      () => _applyWallpaperInIsolate((path: imagePath, fitMode: fitMode)),
+    );
+  }
+
+  /// 后台 isolate 入口。必须是静态函数：闭包捕获 `this` 会把整个
+  /// [WallpaperService] 一起搬过去，没有必要。
+  static WallpaperResult _applyWallpaperInIsolate(
+    ({String path, int fitMode}) args,
+  ) {
+    return WallpaperService().setWallpaper(args.path, fitMode: args.fitMode);
   }
 
   /// 设置锁屏背景。

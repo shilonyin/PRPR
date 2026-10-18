@@ -68,6 +68,10 @@ class PrprApp extends StatelessWidget {
             theme: AppTheme.light(),
             darkTheme: AppTheme.dark(),
             themeMode: mode,
+            // 主题切换默认是硬切，整屏颜色一帧内翻掉最刺眼。给一个短过渡，
+            // 但只动颜色、不动位移和缩放——换肤不需要「表演」。
+            themeAnimationDuration: AppTheme.durMed,
+            themeAnimationCurve: AppTheme.curveEmph,
             home: const HomePage(),
           );
         },

@@ -61,6 +61,42 @@ class AppTheme {
     FontFeature.tabularFigures(),
   ];
 
+  // ---------------------------------------------------------------- 动效
+  //
+  // 收在这里的理由和间距一样：以前 90/150/200/300 混着用，easeOut 和默认
+  // 曲线混着用，单看每一处都合理，连起来就没有节奏。
+  //
+  // 桌面鼠标的操作节奏比触屏快：超过 240ms 的 micro-interaction 会被读成
+  // 「迟钝」，而 300ms 的页面转场又刚好让人盯着等。所以整套值压在
+  // 90~260ms 这个区间里，只有「长任务进度」例外。
+
+  /// 按下 / 抬起。
+  static const Duration durMicro = Duration(milliseconds: 90);
+
+  /// 图标、遮罩、chip、小范围淡入。
+  static const Duration durFast = Duration(milliseconds: 140);
+
+  /// tab 内容、标题、透明度变化。
+  static const Duration durBase = Duration(milliseconds: 180);
+
+  /// 图片渐显、侧栏展开、状态切换、SnackBar。
+  static const Duration durMed = Duration(milliseconds: 220);
+
+  /// 页面转场、详情页换画质、列表新行入场。
+  static const Duration durSlow = Duration(milliseconds: 260);
+
+  /// 长任务的分段进度爬行。
+  static const Duration durTask = Duration(milliseconds: 400);
+
+  /// 出现用这个：第一帧就基本可见，桌面用户切完就开始读内容了。
+  static const Curve curveIn = Curves.easeOutCubic;
+
+  /// 消失用这个。比 [curveIn] 慢一点收尾，避免「啪」地没了。
+  static const Curve curveOut = Curves.easeInCubic;
+
+  /// 整体状态变幻（主题切换、侧栏宽度）。
+  static const Curve curveEmph = Curves.easeInOutCubic;
+
   static ThemeData light() => _build(Brightness.light);
 
   static ThemeData dark() => _build(Brightness.dark);
@@ -104,7 +140,9 @@ class AppTheme {
         backgroundColor: isDark ? const Color(0xFF1A1A20) : Colors.white,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        scrolledUnderElevation: 1,
+        // 列表滚到顶部时标题栏悄悄换一次底色，等于在画面顶部划一条横线。
+        // 这个变化没有要表达的信息，最好的处理不是加动画而是让它不存在。
+        scrolledUnderElevation: 0,
         centerTitle: false,
         titleTextStyle: TextStyle(
           fontSize: 18,
@@ -147,7 +185,12 @@ class AppTheme {
       // 桌面端必须有明确可抓的滚动条：Windows 默认那条极细且颜色浅，
       // 深色主题里几乎看不见。
       scrollbarTheme: ScrollbarThemeData(
-        thickness: WidgetStateProperty.all(8),
+        // 常态 6、悬停/拖动 10：8 在 4K 上太细，10 常驻又太抢眼。
+        thickness: WidgetStateProperty.resolveWith((states) {
+          final active = states.contains(WidgetState.hovered) ||
+              states.contains(WidgetState.dragged);
+          return active ? 10 : 6;
+        }),
         radius: const Radius.circular(4),
         thumbColor: WidgetStateProperty.resolveWith((states) {
           final hovered = states.contains(WidgetState.hovered) ||

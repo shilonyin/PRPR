@@ -14,6 +14,13 @@ import '../models/post_filter.dart';
 ///
 /// 原版大量使用 `[CallerMemberName]` 让「属性名即键名」；
 /// 这里显式写死键名，避免重构时静默丢配置。
+///
+/// ## 为什么要 flush
+///
+/// `shared_preferences` 的 setter 是「同步改内存缓存 + 异步写磁盘」，写盘返回
+/// 的是 Future。以前每次赋值都把这个 Future 丢掉，于是界面上没有任何办法知道
+/// 「这次改动到底落盘了没有」—— 设置页想显示一个「已保存」都无从判断。
+/// 这里把最近一次写盘 Future 记下来，`flush` 就是它的完成信号。
 class AppSettings extends ChangeNotifier {
   AppSettings._(this._prefs);
 
@@ -39,12 +46,33 @@ class AppSettings extends ChangeNotifier {
     return AppSettings._(prefs);
   }
 
+  // ---------- 落盘追踪 ----------
+
+  Future<void> _pending = Future<void>.value();
+
+  /// 每次发起写盘就 +1，供界面显示「已保存」。
+  ///
+  /// 用独立的 ValueNotifier 而不是 notifyListeners：写盘不代表数据变了
+  /// （用户可能把某个值改回原样），而且指示器只想重绘自己那一小块，
+  /// 不该让整页设置跟着重建。
+  final ValueNotifier<int> saveTick = ValueNotifier<int>(0);
+
+  /// 记录一次写盘。失败也吞掉：设置项写盘失败没有可执行的补救动作，
+  /// 抛出去只会变成一条谁也看不懂的红屏。
+  void _track(Future<bool> write) {
+    _pending = write.then<void>((_) {}, onError: (Object _) {});
+    saveTick.value++;
+  }
+
+  /// 等待最近一次写盘完成。设置页用它来显示「已保存」。
+  Future<void> flush() => _pending;
+
   // ---------- 站点 ----------
 
   /// 站点地址，默认 yande.re。
   String get host => _prefs.getString(_kHost) ?? AppConstants.defaultHost;
   set host(String v) {
-    _prefs.setString(_kHost, v);
+    _track(_prefs.setString(_kHost, v));
     notifyListeners();
   }
 
@@ -52,7 +80,7 @@ class AppSettings extends ChangeNotifier {
   String get passwordHashSalt =>
       _prefs.getString(_kPasswordHashSalt) ?? AppConstants.defaultPasswordHashSalt;
   set passwordHashSalt(String v) {
-    _prefs.setString(_kPasswordHashSalt, v);
+    _track(_prefs.setString(_kPasswordHashSalt, v));
     notifyListeners();
   }
 
@@ -60,41 +88,33 @@ class AppSettings extends ChangeNotifier {
 
   String? get userName => _prefs.getString(_kUserName);
   set userName(String? v) {
-    if (v == null) {
-      _prefs.remove(_kUserName);
-    } else {
-      _prefs.setString(_kUserName, v);
-    }
+    _track(v == null ? _prefs.remove(_kUserName) : _prefs.setString(_kUserName, v));
     notifyListeners();
   }
 
   String? get passwordHash => _prefs.getString(_kPasswordHash);
   set passwordHash(String? v) {
-    if (v == null) {
-      _prefs.remove(_kPasswordHash);
-    } else {
-      _prefs.setString(_kPasswordHash, v);
-    }
+    _track(
+      v == null
+          ? _prefs.remove(_kPasswordHash)
+          : _prefs.setString(_kPasswordHash, v),
+    );
     notifyListeners();
   }
 
   String? get userId => _prefs.getString(_kUserId);
   set userId(String? v) {
-    if (v == null) {
-      _prefs.remove(_kUserId);
-    } else {
-      _prefs.setString(_kUserId, v);
-    }
+    _track(v == null ? _prefs.remove(_kUserId) : _prefs.setString(_kUserId, v));
     notifyListeners();
   }
 
-  /// 是否已登录。原版 `IsLoggedIn => UserID != null`。
+  /// 是否已登录。原版 IsLoggedIn => UserID != null。
   bool get isLoggedIn => userId != null;
 
   void signOut() {
-    _prefs.remove(_kUserName);
-    _prefs.remove(_kPasswordHash);
-    _prefs.remove(_kUserId);
+    _track(_prefs.remove(_kUserName));
+    _track(_prefs.remove(_kPasswordHash));
+    _track(_prefs.remove(_kUserId));
     notifyListeners();
   }
 
@@ -113,65 +133,67 @@ class AppSettings extends ChangeNotifier {
   }
 
   set filter(PostFilter v) {
-    _prefs.setString(_kFilter, jsonEncode(v.toJson()));
+    _track(_prefs.setString(_kFilter, jsonEncode(v.toJson())));
     notifyListeners();
   }
 
   // ---------- 壁纸引擎 ----------
 
-  /// 裁剪方式索引，对应 `CropMethod`。
+  /// 裁剪方式索引，对应 CropMethod。
   int get cropMethodIndex => _prefs.getInt(_kCropMethod) ?? 4; // 默认 MostFaces
   set cropMethodIndex(int v) {
-    _prefs.setInt(_kCropMethod, v);
+    _track(_prefs.setInt(_kCropMethod, v));
     notifyListeners();
   }
 
-  /// 画质等级 0=preview 1=jpeg 2=source。原版 `qualityLevel`。
+  /// 画质等级 0=preview 1=jpeg 2=source。原版 qualityLevel。
   int get qualityLevel => _prefs.getInt(_kQualityLevel) ?? 2;
   set qualityLevel(int v) {
-    _prefs.setInt(_kQualityLevel, v);
+    _track(_prefs.setInt(_kQualityLevel, v));
     notifyListeners();
   }
 
-  /// 随机窗口大小。原版 `postShuffle`。
+  /// 随机窗口大小。原版 postShuffle。
   int get shuffleWindow => _prefs.getInt(_kShuffleWindow) ?? 50;
   set shuffleWindow(int v) {
-    _prefs.setInt(_kShuffleWindow, v.clamp(1, AppConstants.maxShuffleWindow));
+    _track(
+      _prefs.setInt(_kShuffleWindow, v.clamp(1, AppConstants.maxShuffleWindow)),
+    );
     notifyListeners();
   }
 
   /// 是否启用自动换壁纸。
   bool get autoChangeEnabled => _prefs.getBool(_kAutoChangeEnabled) ?? false;
   set autoChangeEnabled(bool v) {
-    _prefs.setBool(_kAutoChangeEnabled, v);
+    _track(_prefs.setBool(_kAutoChangeEnabled, v));
     notifyListeners();
   }
 
   /// 自动换壁纸间隔（分钟）。
   int get autoChangeMinutes => _prefs.getInt(_kAutoChangeMinutes) ?? 60;
   set autoChangeMinutes(int v) {
-    _prefs.setInt(_kAutoChangeMinutes, v.clamp(1, 60 * 24 * 7));
+    _track(_prefs.setInt(_kAutoChangeMinutes, v.clamp(1, 60 * 24 * 7)));
     notifyListeners();
   }
 
   /// 默认拉取用的标签串。
   String get defaultTags => _prefs.getString(_kDefaultTags) ?? '';
   set defaultTags(String v) {
-    _prefs.setString(_kDefaultTags, v);
+    _track(_prefs.setString(_kDefaultTags, v));
     notifyListeners();
   }
 
-  /// 主题：0=跟随系统 1=浅色 2=深色。对应原 `ThemeSelectedIndex`。
+  /// 主题：0=跟随系统 1=浅色 2=深色。对应原 ThemeSelectedIndex。
   int get themeModeIndex => _prefs.getInt(_kThemeMode) ?? 0;
   set themeModeIndex(int v) {
-    _prefs.setInt(_kThemeMode, v);
+    _track(_prefs.setInt(_kThemeMode, v));
     notifyListeners();
   }
 
-  /// 壁纸契合度，见 `WallpaperService.fitMode*`。
+  /// 壁纸契合度，见 WallpaperService.fitMode*。
   int get fitMode => _prefs.getInt(_kFitMode) ?? 4;
   set fitMode(int v) {
-    _prefs.setInt(_kFitMode, v);
+    _track(_prefs.setInt(_kFitMode, v));
     notifyListeners();
   }
 }

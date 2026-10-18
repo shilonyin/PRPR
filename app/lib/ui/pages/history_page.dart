@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../services/history_store.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import '../widgets/state_message.dart';
 
 /// 换壁纸历史页。
 ///
@@ -80,13 +81,10 @@ class _HistoryPageState extends State<HistoryPage> {
         const Divider(height: 1),
         Expanded(
           child: items.isEmpty
-              ? Center(
-                  child: Text(
-                    '还没有换过壁纸',
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
+              ? const StateMessage(
+                  icon: Icons.history,
+                  title: '还没有换过壁纸',
+                  hint: '换一张之后，这里会留下记录，方便找回刚才那张。',
                 )
               : ListView.separated(
                   padding: const EdgeInsets.symmetric(vertical: AppTheme.gapS),
@@ -96,8 +94,22 @@ class _HistoryPageState extends State<HistoryPage> {
                     height: 1,
                     indent: AppTheme.pagePadding + _thumbSize + AppTheme.gapS,
                   ),
-                  itemBuilder: (context, index) =>
-                      _HistoryRow(record: items[index]),
+                  itemBuilder: (context, index) {
+                    final record = items[index];
+                    // 只有刚写进来的那条才播入场：判定方式是「时间戳离现在很近」。
+                    // 不用 compare 上一次列表快照，是因为用户可能在历史页停留时
+                    // 换壁纸，那时列表会原地重建，快照法会把整列都当成新的。
+                    final fresh = DateTime.now()
+                            .difference(record.appliedAt)
+                            .inSeconds <
+                        3;
+                    return _HistoryRow(
+                      key: ValueKey<int>(record.appliedAtUnix * 1000 +
+                          record.postId),
+                      record: record,
+                      animate: fresh,
+                    );
+                  },
                 ),
         ),
       ],
@@ -106,14 +118,35 @@ class _HistoryPageState extends State<HistoryPage> {
 }
 
 class _HistoryRow extends StatelessWidget {
-  const _HistoryRow({required this.record});
+  const _HistoryRow({super.key, required this.record, this.animate = false});
 
   final HistoryRecord record;
 
+  /// 新的一行从上方 12px 滑进来，让「刚刚换上了」这件事有个落点。
+  final bool animate;
+
   @override
   Widget build(BuildContext context) {
+    final tile = _buildTile(context);
+    if (!animate) return tile;
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: -12, end: 0),
+      duration: AppTheme.durSlow,
+      curve: AppTheme.curveIn,
+      builder: (context, dy, child) => Transform.translate(
+        offset: Offset(0, dy),
+        child: Opacity(
+          opacity: (1 + dy / 12).clamp(0.0, 1.0),
+          child: child,
+        ),
+      ),
+      child: tile,
+    );
+  }
+
+  Widget _buildTile(BuildContext context) {
     final theme = Theme.of(context);
-    final time = DateTime.fromMillisecondsSinceEpoch(record.appliedAtUnix * 1000);
+    final time = record.appliedAt;
     final subtitle = StringBuffer()
       ..write('${time.year}-${_two(time.month)}-${_two(time.day)} ')
       ..write('${_two(time.hour)}:${_two(time.minute)}');

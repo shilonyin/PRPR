@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -9,7 +11,9 @@ import '../../services/wallpaper_service.dart';
 import '../../services/yande_client.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import '../widgets/app_route.dart';
 import '../widgets/app_text_field.dart';
+import '../widgets/app_toast.dart';
 import 'about_page.dart';
 
 /// 设置页。对应原 UWP 的 `SettingPage` + `SettingWallpaperPage` +
@@ -33,6 +37,12 @@ class _SettingsPageState extends State<SettingsPage> {
   final TextEditingController _blacklistController = TextEditingController();
 
   bool _signingIn = false;
+
+  /// 滑块拖动中的临时值。拖动时只改这两个数，松手才写回设置：
+  /// 以前每次 onChanged 都写一次 shared_preferences 并 notifyListeners 一次，
+  /// 拖一次「随机范围」会触发三十来次全树重建和三十来次写盘。
+  double? _shufflePreview;
+  double? _autoMinutesPreview;
 
   /// 校验失败时的错误文案，直接显示在对应输入框下方（errorText）。
   String? _hostError;
@@ -61,11 +71,11 @@ class _SettingsPageState extends State<SettingsPage> {
     super.dispose();
   }
 
+  /// 只有失败才弹提示。成功会体现在界面状态上（登录后账号段变成已登录样式），
+  /// 再弹一条「登录成功」等于让用户读一遍他刚看到的东西。
   void _toast(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(content: Text(message)));
+    AppToast.error(context, message);
   }
 
   /// 用户一动手就把旧错误收掉，不要让它一直红着。
@@ -121,7 +131,7 @@ class _SettingsPageState extends State<SettingsPage> {
       settings.passwordHash =
           YandeClient.hashPassword(password, settings.passwordHashSalt);
       _passwordController.clear();
-      _toast('登录成功');
+      // 登录成功不弹提示：账号段会立刻变成「已登录：xxx」的样子，已经说清楚了。
     } catch (e) {
       _toast('$e');
     } finally {
@@ -150,6 +160,7 @@ class _SettingsPageState extends State<SettingsPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                const _SavedHint(),
                 _section(context, '站点', [
                   _textField(
                     controller: _hostController,
@@ -257,12 +268,18 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   _slider(
                     label: '随机范围',
-                    value: settings.shuffleWindow.toDouble(),
+                    value:
+                        _shufflePreview ?? settings.shuffleWindow.toDouble(),
                     min: 1,
                     max: AppConstants.maxShuffleWindow.toDouble(),
                     divisions: AppConstants.maxShuffleWindow - 1,
-                    display: '${settings.shuffleWindow} 张',
-                    onChanged: (v) => settings.shuffleWindow = v.round(),
+                    display: '${(_shufflePreview ?? settings.shuffleWindow.toDouble()).round()} 张',
+                    // 拖动只更新本地预览，松手才写回设置。
+                    onChanged: (v) => setState(() => _shufflePreview = v),
+                    onChangeEnd: (v) {
+                      settings.shuffleWindow = v.round();
+                      setState(() => _shufflePreview = null);
+                    },
                   ),
                   _textField(
                     controller: _tagsController,
@@ -286,13 +303,25 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   _slider(
                     label: '间隔',
-                    value: settings.autoChangeMinutes.toDouble().clamp(1, 1440),
+                    value: (_autoMinutesPreview ??
+                            settings.autoChangeMinutes.toDouble())
+                        .clamp(1, 1440),
                     min: 1,
                     max: 1440,
                     divisions: 1439,
-                    display: _minutesLabel(settings.autoChangeMinutes),
+                    display: _minutesLabel(
+                      (_autoMinutesPreview ??
+                              settings.autoChangeMinutes.toDouble())
+                          .round(),
+                    ),
                     onChanged: settings.autoChangeEnabled
-                        ? (v) => settings.autoChangeMinutes = v.round()
+                        ? (v) => setState(() => _autoMinutesPreview = v)
+                        : null,
+                    onChangeEnd: settings.autoChangeEnabled
+                        ? (v) {
+                            settings.autoChangeMinutes = v.round();
+                            setState(() => _autoMinutesPreview = null);
+                          }
                         : null,
                   ),
                   if (settings.autoChangeEnabled)
@@ -382,7 +411,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     subtitle: const Text('版本、开源许可与致谢'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute<void>(
+                      appPageRoute<void>(
                         builder: (_) => const AboutPage(),
                       ),
                     ),
@@ -538,6 +567,7 @@ class _SettingsPageState extends State<SettingsPage> {
     required int divisions,
     required String display,
     required ValueChanged<double>? onChanged,
+    ValueChanged<double>? onChangeEnd,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -551,7 +581,8 @@ class _SettingsPageState extends State<SettingsPage> {
               max: max,
               divisions: divisions,
               onChanged: onChanged,
-              onChangeEnd: onChanged,
+              // 没给 onChangeEnd 就退回老行为（拖一下就落盘）。
+              onChangeEnd: onChangeEnd ?? onChanged,
               label: display,
             ),
           ),
@@ -605,4 +636,100 @@ class _SubHeader extends StatelessWidget {
         padding: const EdgeInsets.only(top: 8, bottom: 4),
         child: Text(text, style: AppTheme.hint(context)),
       );
+}
+
+/// 设置项落盘后短暂出现的「已保存」。
+///
+/// 以前写盘是「同步改内存 + 异步落盘」，界面上完全看不出改了到底存没存，
+/// 只能靠 SnackBar 念一句「保存成功」。这里把状态放回界面：一行小字亮一下，
+/// 1.2 秒后自己走。
+///
+/// 不做「每段一个」：一次动作常跨多个键（登录会同时写用户名、用户 ID、
+/// 密码哈希），逐个标注归属的复杂度换不来更有用的信息。
+class _SavedHint extends StatefulWidget {
+  const _SavedHint();
+
+  @override
+  State<_SavedHint> createState() => _SavedHintState();
+}
+
+class _SavedHintState extends State<_SavedHint> {
+  static const Duration _hold = Duration(milliseconds: 1200);
+
+  bool _visible = false;
+  Timer? _timer;
+  ValueNotifier<int>? _tick;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // saveTick 实例在应用生命周期内不变，这里天然只注册一次。
+    final tick = context.read<AppSettings>().saveTick;
+    if (identical(_tick, tick)) return;
+    _tick?.removeListener(_onSaved);
+    _tick = tick..addListener(_onSaved);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _tick?.removeListener(_onSaved);
+    super.dispose();
+  }
+
+  void _onSaved() {
+    if (!mounted) return;
+    setState(() => _visible = true);
+    _timer?.cancel();
+    _timer = Timer(_hold, () {
+      if (mounted) setState(() => _visible = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // 固定高度：出现和消失都不推动下面的表单。
+    return SizedBox(
+      height: 28,
+      child: AnimatedSwitcher(
+        duration: AppTheme.durFast,
+        switchInCurve: AppTheme.curveIn,
+        switchOutCurve: AppTheme.curveOut,
+        transitionBuilder: (child, animation) => FadeTransition(
+          opacity: animation,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.25),
+              end: Offset.zero,
+            ).animate(animation),
+            child: child,
+          ),
+        ),
+        child: _visible
+            ? Align(
+                key: const ValueKey<String>('saved'),
+                alignment: Alignment.centerRight,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.check_circle_outline,
+                      size: AppTheme.iconXs,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: AppTheme.gapXs),
+                    Text(
+                      '已保存',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            : const SizedBox(key: ValueKey<String>('idle')),
+      ),
+    );
+  }
 }

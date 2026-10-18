@@ -5,8 +5,11 @@ import 'package:provider/provider.dart';
 import '../../models/post.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import '../widgets/app_route.dart';
 import '../widgets/app_text_field.dart';
+import '../widgets/app_toast.dart';
 import '../widgets/post_grid.dart';
+import '../widgets/state_message.dart';
 import 'post_detail_page.dart';
 
 /// Ctrl+K 把焦点送到搜索框。
@@ -36,6 +39,13 @@ class _SearchViewState extends State<SearchView> {
   final FocusNode _focusNode = FocusNode();
   final FocusNode _shortcutScope = FocusNode();
 
+  /// 首页发来的「把光标送进搜索框」信号。Ctrl+K 在任何页都该有用，
+  /// 而本页自己的快捷键只在本页有焦点时才生效，所以还要接住这条。
+  ValueNotifier<int>? _focusTick;
+
+  /// 首页发来的「刷新当前页」信号。
+  ValueNotifier<int>? _refreshTick;
+
   /// 历史搜索词，仅存活于本次运行。原版有搜索建议，这里用最近搜索顶替。
   final List<String> _recent = <String>[];
 
@@ -52,11 +62,39 @@ class _SearchViewState extends State<SearchView> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final state = context.read<AppState>();
+    if (!identical(_focusTick, state.focusSearchTick)) {
+      _focusTick?.removeListener(_takeFocus);
+      _focusTick = state.focusSearchTick..addListener(_takeFocus);
+    }
+    if (!identical(_refreshTick, state.refreshTick)) {
+      _refreshTick?.removeListener(_refresh);
+      _refreshTick = state.refreshTick..addListener(_refresh);
+    }
+  }
+
+  @override
   void dispose() {
+    _focusTick?.removeListener(_takeFocus);
+    _refreshTick?.removeListener(_refresh);
     _controller.dispose();
     _focusNode.dispose();
     _shortcutScope.dispose();
     super.dispose();
+  }
+
+  void _takeFocus() {
+    if (!mounted) return;
+    _focusNode.requestFocus();
+  }
+
+  void _refresh() {
+    if (!mounted) return;
+    final state = context.read<AppState>();
+    if (state.currentTab != 0) return;
+    state.search(state.query, force: true);
   }
 
   Future<void> _submit(String query) async {
@@ -69,12 +107,9 @@ class _SearchViewState extends State<SearchView> {
     });
     await state.search(trimmed, force: true);
     if (!mounted) return;
+    // 失败信息已经留在内容区（空态里带重试），这里只是补一条即时提示。
     final error = state.error;
-    if (error != null) {
-      ScaffoldMessenger.of(context)
-        ..clearSnackBars()
-        ..showSnackBar(SnackBar(content: Text(error)));
-    }
+    if (error != null) AppToast.error(context, error);
   }
 
   /// 清空输入并留住焦点，方便直接重输下一个词。
@@ -99,7 +134,7 @@ class _SearchViewState extends State<SearchView> {
 
   void _open(Post post) {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(
+      appPageRoute<void>(
         builder: (_) => PostDetailPage(post: post, heroPrefix: 'search-'),
       ),
     );
@@ -142,7 +177,9 @@ class _SearchViewState extends State<SearchView> {
                 heroPrefix: 'search-',
                 hasMore: state.hasMoreFor(query),
                 isLoadingMore: state.isLoading,
-                emptyText: state.isLoading ? '正在加载…' : '没有找到符合条件的图片',
+                // 首次加载走骨架；翻页时列表不动，只在底部飘一条进度。
+                initialLoading: state.isLoading && posts.isEmpty,
+                emptyText: '没有找到符合条件的图片',
                 emptyBuilder: (context) => _emptyState(context, state),
                 onOpen: _open,
                 onLoadMore: () => state.loadMore(query),
@@ -156,106 +193,39 @@ class _SearchViewState extends State<SearchView> {
 
   /// 空状态。
   ///
-  /// 失败信息不能只靠 SnackBar —— 它四秒就消失，用户回来只看到「没有找到符合条件的图片」，
+  /// 失败信息不能只靠提示条 —— 它几秒就消失，用户回来只看到「没有找到符合条件的图片」，
   /// 会以为是搜索词的问题。国内网络下最常见的原因恰恰是代理没生效，必须留在界面上。
   Widget _emptyState(BuildContext context, AppState state) {
     final theme = Theme.of(context);
     final error = state.error;
 
-    if (state.isLoading) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(
-              width: 28,
-              height: 28,
-              child: CircularProgressIndicator(strokeWidth: 3),
-            ),
-            const SizedBox(height: AppTheme.gapL),
-            Text('正在加载…', style: theme.textTheme.bodyMedium),
-          ],
-        ),
-      );
-    }
-
+    // 两种状态之间加过渡：失败重试成功后如果直接硬切，用户会怀疑自己
+    // 是不是点错了——界面上什么都没「回去」的痕迹。
     if (error != null) {
-      // 标题 16/w600、具体错误与通用建议同为 12 但分两档色：原来三行只差
-      // 2px 同色同号，用户分不清哪句是「到底出了什么错」。
-      return Center(
-        child: ConstrainedBox(
-          // 420 会让「无法连接站点：远程计算机拒绝网络连接。请检查网络或代理设置」
-          // 折在最后一两个字上（实测「置」单独占一行），480 刚好放得下整句。
-          constraints: const BoxConstraints(maxWidth: 480),
-          child: Padding(
-            padding: const EdgeInsets.all(AppTheme.gapXxl),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.cloud_off_outlined,
-                  size: AppTheme.iconXl,
-                  color: theme.colorScheme.error,
-                ),
-                const SizedBox(height: AppTheme.gapL),
-                Text(
-                  '加载失败',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: theme.colorScheme.onSurface,
-                  ),
-                ),
-                const SizedBox(height: AppTheme.gapS),
-                Text(
-                  error,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                  textAlign: TextAlign.center,
-                  maxLines: 4,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: AppTheme.gapS),
-                Text(
-                  '如果是国内网络，请确认系统代理已开启',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant
-                        .withValues(alpha: 0.85),
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: AppTheme.gapXl),
-                FilledButton.tonalIcon(
-                  onPressed: () => state.search(state.query, force: true),
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('重试'),
-                ),
-              ],
-            ),
-          ),
+      return StateMessageSwitcher(
+        stateKey: 'error',
+        child: StateMessage(
+          icon: Icons.cloud_off_outlined,
+          iconColor: theme.colorScheme.error,
+          title: '加载失败',
+          detail: error,
+          hint: '如果是国内网络，请确认系统代理已开启',
+          actionLabel: '重试',
+          // 重试进行中：按钮原位换成小环、整块压暗，而不是消失再重来。
+          busy: state.isLoading,
+          onAction: () => state.search(state.query, force: true),
         ),
       );
     }
 
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(AppTheme.gapXxl),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.image_outlined,
-              size: AppTheme.iconXl,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(height: AppTheme.gapL),
-            Text(
-              '没有找到符合条件的图片',
-              style: theme.textTheme.bodyMedium,
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
+    return StateMessageSwitcher(
+      stateKey: 'empty',
+      child: StateMessage(
+        icon: Icons.image_outlined,
+        title: '没有找到符合条件的图片',
+        hint: '换个标签组合试试',
+        suggestions: const <String>['landscape', 'sky', 'original'],
+        onSuggestion: _reuseRecent,
       ),
     );
   }
@@ -320,16 +290,7 @@ class _SearchViewState extends State<SearchView> {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            if (postsCount(state) > 0)
-              Text(
-                '共 ${_formatCount(totalCount(state))} 张',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: theme.colorScheme.onSurfaceVariant,
-                  fontFeatures: AppTheme.tabularFigures,
-                ),
-              ),
+            if (totalCount(state) > 0) _CountLabel(total: totalCount(state)),
           ],
         ),
         if (_recent.isNotEmpty) ...[
@@ -358,28 +319,64 @@ class _SearchViewState extends State<SearchView> {
           const SizedBox(height: AppTheme.gapXs),
           // 去掉 avatar：标题已经有 history 图标了，chip 里再来一个是重复，
           // 而且把 2 字搜索词撑出三个视觉元素。
-          Wrap(
-            spacing: AppTheme.gapS,
-            runSpacing: AppTheme.gapS,
-            children: [
-              for (final q in _recent)
-                InputChip(
-                  label: Text(q),
-                  onPressed: () => _reuseRecent(q),
-                  onDeleted: () => _removeRecent(q),
-                  deleteButtonTooltipMessage: '移除「$q」',
-                  deleteIcon: const Icon(Icons.close, size: AppTheme.iconXs),
-                ),
-            ],
+          //
+          // 外面套 AnimatedSize：增删一个搜索词时整块高度会跳一下，尤其在
+          // 换行边界上（第 5 个词把第 6 个挤到下一行）。补间把这个跳变成一次
+          // 位移；不给单个 chip 做缩放——那是 chip 能有的动效里最吵的一种。
+          AnimatedSize(
+            duration: AppTheme.durBase,
+            curve: AppTheme.curveEmph,
+            alignment: Alignment.topLeft,
+            child: Wrap(
+              spacing: AppTheme.gapS,
+              runSpacing: AppTheme.gapS,
+              children: [
+                for (final q in _recent)
+                  InputChip(
+                    label: Text(q),
+                    onPressed: () => _reuseRecent(q),
+                    onDeleted: () => _removeRecent(q),
+                    deleteButtonTooltipMessage: '移除「$q」',
+                    deleteIcon: const Icon(Icons.close, size: AppTheme.iconXs),
+                  ),
+              ],
+            ),
           ),
         ],
       ],
     );
   }
 
-  int postsCount(AppState state) => state.postsFor(state.query).length;
-
   int totalCount(AppState state) => state.totalFor(state.query);
+}
+
+/// 结果总数。
+///
+/// 数字从 0 滚到总数：搜索完成时数字在动，用户一眼就知道「这次是新结果」，
+/// 不用去比对上次是多少。
+class _CountLabel extends StatelessWidget {
+  const _CountLabel({required this.total});
+
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: total.toDouble()),
+      duration: AppTheme.durTask,
+      curve: AppTheme.curveIn,
+      builder: (context, value, _) => Text(
+        '共 ${_formatCount(value.round())} 张',
+        style: theme.textTheme.bodySmall?.copyWith(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: theme.colorScheme.onSurfaceVariant,
+          fontFeatures: AppTheme.tabularFigures,
+        ),
+      ),
+    );
+  }
 
   /// 把总数格式化成好读的形式：过万用「万」，否则加千分位。
   ///

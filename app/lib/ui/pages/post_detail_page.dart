@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +10,8 @@ import '../../services/app_settings.dart';
 import '../../services/yande_client.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import '../widgets/app_toast.dart';
+import '../widgets/hero_flight.dart';
 
 /// 图片详情页。对应原 UWP 的 `ImagePage`。
 ///
@@ -28,7 +32,26 @@ class _PostDetailPageState extends State<PostDetailPage> {
   late PostImageVersion _version = _initialVersion();
 
   bool _busy = false;
+
+  /// 「设为壁纸」自己是否在跑。与 [_busy] 分开：收藏 / 投票也会把
+  /// [_busy] 置真，但那时候不该在「设为壁纸」按钮上转圈。
+  bool _applying = false;
+
   VoteType? _currentVote;
+
+  /// 哪个按钮刚刚「做成了事」，用来把图标临时换成对勾。
+  String? _flashKey;
+  Timer? _flashTimer;
+
+  /// 收藏成功的回弹计数。每次收藏成功加一，让 [TweenAnimationBuilder] 重播。
+  int _favBounce = 0;
+
+
+  @override
+  void dispose() {
+    _flashTimer?.cancel();
+    super.dispose();
+  }
 
   Post get post => widget.post;
 
@@ -72,11 +95,19 @@ class _PostDetailPageState extends State<PostDetailPage> {
     }
   }
 
-  void _toast(String message) {
+  void _showError(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars()
-      ..showSnackBar(SnackBar(content: Text(message)));
+    AppToast.error(context, message);
+  }
+
+  /// 复制、收藏这类动作成功后不再弹提示——按钮自己的形态变化就已经
+  /// 把结果说完了，弹一条飘走的小条只会挡住图片。
+  void _flash(String key) {
+    _flashTimer?.cancel();
+    if (mounted) setState(() => _flashKey = key);
+    _flashTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _flashKey = null);
+    });
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -85,7 +116,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
     try {
       await action();
     } catch (e) {
-      _toast('$e');
+      _showError(AppState.describeError(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -93,15 +124,21 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   Future<void> _applyAsWallpaper() => _run(() async {
         final state = context.read<AppState>();
-        final result = await state.applyPost(post);
-        _toast(result.message);
+        if (mounted) setState(() => _applying = true);
+        try {
+          final result = await state.applyPost(post);
+          // 失败要说清原因；成功时首页的任务胶囊会变成绿色对勾。
+          if (!result.success) _showError(result.message);
+        } finally {
+          if (mounted) setState(() => _applying = false);
+        }
       });
 
   Future<void> _toggleFavorite() async {
     final state = context.read<AppState>();
     final settings = state.settings;
     if (!settings.isLoggedIn) {
-      _toast('请先在设置里登录才能收藏');
+      _showError('请先在设置里登录才能收藏');
       return;
     }
     await _run(() async {
@@ -114,9 +151,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
       );
       if (ok) {
         setState(() => _currentVote = favorite ? VoteType.favorite : VoteType.none);
-        _toast(favorite ? '已加入收藏' : '已取消收藏');
+        setState(() => _favBounce++);
+        _flash('fav');
       } else {
-        _toast('操作失败，请检查登录状态');
+        _showError('操作失败，请检查登录状态');
       }
     });
   }
@@ -125,7 +163,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
     final state = context.read<AppState>();
     final settings = state.settings;
     if (!settings.isLoggedIn) {
-      _toast('请先在设置里登录才能投票');
+      _showError('请先在设置里登录才能投票');
       return;
     }
     await _run(() async {
@@ -137,9 +175,9 @@ class _PostDetailPageState extends State<PostDetailPage> {
       );
       if (ok) {
         setState(() => _currentVote = v);
-        _toast('已投票：${v.label}');
+        _flash('vote-${v.name}');
       } else {
-        _toast('投票失败');
+        _showError('投票失败');
       }
     });
   }
@@ -147,31 +185,41 @@ class _PostDetailPageState extends State<PostDetailPage> {
   Future<void> _copyLink() async {
     final url = post.urlFor(_version);
     if (url.isEmpty) {
-      _toast('该版本没有可用地址');
+      _showError('该版本没有可用地址');
       return;
     }
     await Clipboard.setData(ClipboardData(text: url));
-    _toast('已复制图片地址');
+    _flash('link');
   }
 
   @override
   Widget build(BuildContext context) {
+    // Esc 返回列表。桌面用户从浏览器带来的肌肉记忆，成本只有这几行；
+    // 键盘上按一下比把鼠标挪到左上角的返回箭头近得多。
+    return Shortcuts(
+      shortcuts: const <ShortcutActivator, Intent>{
+        SingleActivator(LogicalKeyboardKey.escape): _DismissIntent(),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          _DismissIntent: CallbackAction<_DismissIntent>(
+            onInvoke: (_) {
+              Navigator.of(context).maybePop();
+              return null;
+            },
+          ),
+        },
+        child: _buildScaffold(),
+      ),
+    );
+  }
+
+  Widget _buildScaffold() {
     return Scaffold(
       appBar: AppBar(
         title: Text('#${post.id}'),
-        actions: [
-          if (_busy)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16),
-              child: Center(
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            ),
-        ],
+        // 曾经在 actions 里挂一个 18px 的圈表示「有操作在跑」。但页内每个按钮
+        // 自己就有进度反馈，顶部再转一个只会让人猜「到底是哪个在转」。
       ),
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -184,34 +232,91 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
+  /// 大图区。
+  ///
+  /// 这里有三件必须一起做的事：
+  ///
+  /// 1. **外框必须是紧约束**。Hero 的起终点矩形取自 Hero 自己的 render box，
+  ///    以前 Hero 外面套着 `Center`，详情页这边拿到的是整块可用区域，瓦片那边
+  ///    拿到的是卡片，两端比例不同，飞行途中图会被拉伸。现在 Hero 只包住
+  ///    按原图比例算出的那个框，和瓦片一致。
+  /// 2. **底层先放预览图**。预览图在列表里早就下好了，进页面立刻有东西看；
+  ///    用户选的画质（常常是几 MB 的原图）解码要几百毫秒，让它自己淡入接住。
+  /// 3. **换画质用淡入**。硬切会让整块图闪白一下，看起来像加载失败。
   Widget _buildImage() {
     final url = post.urlFor(_version);
     if (url.isEmpty) {
       return const Center(child: Text('该图片没有可显示的版本'));
     }
     final scheme = Theme.of(context).colorScheme;
+    final previewUrl = post.urlFor(PostImageVersion.preview);
+    // 极端长图按原比例铺开会把两侧留成大片空白，限一下。
+    final ratio = post.preferredRatio.clamp(0.2, 5.0);
+
     return ColoredBox(
       color: scheme.surfaceContainerLowest,
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(AppTheme.cardRadius),
-          child: InteractiveViewer(
-            minScale: 0.5,
-            maxScale: 6,
-            child: Center(
-              child: Hero(
-                tag: '${widget.heroPrefix}${post.id}',
-                child: CachedNetworkImage(
-                  imageUrl: url,
-                  fit: BoxFit.contain,
-                  placeholder: (context, _) =>
-                      const Center(child: CircularProgressIndicator()),
-                  errorWidget: (context, _, _) => Center(
-                    child: Text(
-                      '图片加载失败',
-                      style: TextStyle(color: scheme.onSurfaceVariant),
-                    ),
+        padding: const EdgeInsets.all(AppTheme.gapL),
+        child: Center(
+          child: AspectRatio(
+            aspectRatio: ratio,
+            child: Hero(
+              tag: '${widget.heroPrefix}${post.id}',
+              flightShuttleBuilder: (
+                flightContext,
+                animation,
+                direction,
+                fromContext,
+                toContext,
+              ) =>
+                  heroFlightShuttle(
+                flightContext,
+                animation,
+                direction,
+                fromContext,
+                toContext,
+                previewUrl.isEmpty ? url : previewUrl,
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+                child: InteractiveViewer(
+                  minScale: 0.5,
+                  maxScale: 6,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // 预览图铺底：cover 到同一个框，和瓦片看到的裁切一致。
+                      if (previewUrl.isNotEmpty && previewUrl != url)
+                        CachedNetworkImage(
+                          imageUrl: previewUrl,
+                          fit: BoxFit.cover,
+                          fadeInDuration: AppTheme.durFast,
+                          errorWidget: (context, _, _) =>
+                              ColoredBox(color: scheme.surfaceContainerHighest),
+                        ),
+                      AnimatedSwitcher(
+                        duration: AppTheme.durSlow,
+                        switchInCurve: AppTheme.curveIn,
+                        switchOutCurve: AppTheme.curveOut,
+                        // 旧帧留在 Stack 里淡出，新帧淡入，中间不会露出底色。
+                        child: CachedNetworkImage(
+                          key: ValueKey<String>(url),
+                          imageUrl: url,
+                          fit: BoxFit.cover,
+                          fadeInDuration: AppTheme.durMed,
+                          fadeInCurve: AppTheme.curveIn,
+                          // 底层已有预览图，这里不再转圈，否则圈会盖在图上。
+                          placeholder: (context, _) =>
+                              const SizedBox.shrink(),
+                          errorWidget: (context, _, _) => Center(
+                            child: Text(
+                              '图片加载失败',
+                              style: TextStyle(color: scheme.onSurfaceVariant),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -285,9 +390,17 @@ class _PostDetailPageState extends State<PostDetailPage> {
           ],
         ),
         const SizedBox(height: AppTheme.gapS),
+        // 只换左侧图标、不换文案：文案一变按钮就跳宽，鼠标还没来得及抬起来
+        // 目标已经移走了。12px 的环足够表示「在跑」，也足够小到不挤动布局。
         FilledButton.icon(
           onPressed: _busy ? null : _applyAsWallpaper,
-          icon: const Icon(Icons.wallpaper_outlined),
+          icon: _applying
+              ? const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.wallpaper_outlined),
           label: const Text('设为壁纸'),
         ),
         const SizedBox(height: AppTheme.gapS),
@@ -297,16 +410,36 @@ class _PostDetailPageState extends State<PostDetailPage> {
           children: [
             OutlinedButton.icon(
               onPressed: _busy ? null : _toggleFavorite,
-              icon: Icon(
-                _currentVote == VoteType.favorite
-                    ? Icons.favorite
-                    : Icons.favorite_border,
+              // 收藏是用户主动、有明确结果的动作，值得被确认一次：图标先回弹
+              // 一下，再落成实心或空心。
+              icon: TweenAnimationBuilder<double>(
+                key: ValueKey<int>(_favBounce),
+                // easeOutBack 会过冲到 1.1 左右再回落到 1.0，这就是那次「心跳」。
+                tween: Tween<double>(begin: 0.7, end: 1.0),
+                curve: Curves.easeOutBack,
+                duration: _favBounce == 0
+                    ? Duration.zero
+                    : const Duration(milliseconds: 260),
+                builder: (context, value, child) => Transform.scale(
+                  // 0.7 → 1.0 的 easeOutBack：先被压小再弹回并略微过冲。
+                  scale: _favBounce == 0 ? 1 : value,
+                  child: child,
+                ),
+                child: Icon(
+                  _flashKey == 'fav'
+                      ? Icons.check
+                      : _currentVote == VoteType.favorite
+                          ? Icons.favorite
+                          : Icons.favorite_border,
+                ),
               ),
               label: Text(_currentVote == VoteType.favorite ? '已收藏' : '收藏'),
             ),
             OutlinedButton.icon(
               onPressed: _copyLink,
-              icon: const Icon(Icons.link),
+              // 复制成功把图标换成对勾：结果就落在用户点的地方，不用去追一条
+              // 从底下飘过去的提示。
+              icon: Icon(_flashKey == 'link' ? Icons.check : Icons.link),
               label: const Text('复制图片地址'),
             ),
           ],
@@ -342,7 +475,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(
-                      _voteIcon(v),
+                      _flashKey == 'vote-${v.name}' ? Icons.check : _voteIcon(v),
                       size: AppTheme.iconXs,
                       color: scheme.onSurfaceVariant,
                     ),
@@ -437,10 +570,13 @@ class _PostDetailPageState extends State<PostDetailPage> {
           children: [
             for (final tag in post.tagList)
               ActionChip(
+                avatar: _flashKey == 'tag-$tag'
+                    ? const Icon(Icons.check, size: AppTheme.iconXs)
+                    : null,
                 label: Text(tag),
                 onPressed: () {
                   Clipboard.setData(ClipboardData(text: tag));
-                  _toast('已复制标签：$tag');
+                  _flash('tag-$tag');
                 },
               ),
           ],
@@ -450,9 +586,11 @@ class _PostDetailPageState extends State<PostDetailPage> {
           onPressed: () async {
             final url = post.detailUrl(host);
             await Clipboard.setData(ClipboardData(text: url));
-            _toast('已复制详情页地址：$url');
+            _flash('detail-url');
           },
-          icon: const Icon(Icons.open_in_new),
+          icon: Icon(
+            _flashKey == 'detail-url' ? Icons.check : Icons.open_in_new,
+          ),
           label: const Text('复制站点详情页地址'),
         ),
       ],
@@ -478,4 +616,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
     return '${t.year}-${two(t.month)}-${two(t.day)} '
         '${two(t.hour)}:${two(t.minute)}';
   }
+}
+
+/// Esc 返回。单独声明一个 Intent 而不是复用 DismissIntent：
+/// 后者在对话框里另有语义，详情页要的只是「退一层」。
+class _DismissIntent extends Intent {
+  const _DismissIntent();
 }

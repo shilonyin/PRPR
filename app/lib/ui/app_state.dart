@@ -224,6 +224,36 @@ class AppState extends ChangeNotifier {
 
   ChangeStage? currentStage;
 
+  /// 每次成功换上一张壁纸就 +1。
+  ///
+  /// 历史页靠它区分「这行是早就有的」和「这行是刚出现的」——只有刚出现的
+  /// 那行才播入场的位移动画，否则每次进页面整列都会滑一遍，像误操作。
+  /// 用 ValueNotifier 而不是 notifyListeners：换壁纸失败时页面不需要重建。
+  final ValueNotifier<int> wallpaperAppliedTick = ValueNotifier<int>(0);
+
+  /// F5 刷新用的信号。
+  ///
+  /// 每个页面的「刷新」语义不同（搜索页重查当前关键词、精选页重算今日高分、
+  /// 收藏页重拉列表），交给页面自己去响应，比在快捷键里写一个 switch 更
+  /// 容易跟着页面一起演进。
+  final ValueNotifier<int> refreshTick = ValueNotifier<int>(0);
+
+  /// 触发一次「刷新当前页」。由 AppBar 的 F5 / Ctrl+R 调用。
+  void requestRefresh() => refreshTick.value++;
+
+  /// 当前停在哪个导航页（0 搜索 / 1 精选 / 2 收藏 / 3 历史 / 4 设置）。
+  ///
+  /// 由首页在切页时写入，不发通知（切页本身已经让首页 rebuild）。
+  /// 刷新信号需要一个「刷新谁」的依据——所有页面都活在 IndexedStack 里，
+  /// 只递增一个 tick 的话五个页面会一起重新联网，而用户只想刷眼前这个。
+  int currentTab = 0;
+
+  /// 请求把焦点送进搜索框。
+  ///
+  /// 搜索页自己有一份 Ctrl+K，但那只在本页有焦点时有效；在设置页按 Ctrl+K
+  /// 需要先切页再把光标送进去，这两步由首页发信号、搜索页接住。
+  final ValueNotifier<int> focusSearchTick = ValueNotifier<int>(0);
+
   /// 换一张壁纸。[tags] 为空时用设置里的默认标签。
   Future<ChangeResult> changeWallpaper({String? tags}) async {
     currentStage = ChangeStage.fetching;
@@ -236,6 +266,7 @@ class AppState extends ChangeNotifier {
           notifyListeners();
         },
       );
+      if (result.success) wallpaperAppliedTick.value++;
       return result;
     } finally {
       currentStage = null;
@@ -244,10 +275,26 @@ class AppState extends ChangeNotifier {
   }
 
   /// 把指定帖子设为壁纸。
+  ///
+  /// 与 [changeWallpaper] 一样上报 [currentStage]：详情页的按钮和
+  /// 顶部的任务胶囊都靠它判断「正在做什么、能不能再点」。
   Future<ChangeResult> applyPost(Post post) async {
-    final result = await engine.applyPost(post);
+    currentStage = ChangeStage.selecting;
     notifyListeners();
-    return result;
+    try {
+      final result = await engine.applyPost(
+        post,
+        onStage: (stage) {
+          currentStage = stage;
+          notifyListeners();
+        },
+      );
+      if (result.success) wallpaperAppliedTick.value++;
+      return result;
+    } finally {
+      currentStage = null;
+      notifyListeners();
+    }
   }
 
   // ---------- 自动换壁纸 ----------

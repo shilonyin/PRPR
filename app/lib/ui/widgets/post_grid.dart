@@ -1,9 +1,12 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
 import '../../models/post.dart';
 import '../theme.dart';
 import 'post_tile.dart';
+import 'state_message.dart';
 
 /// 瀑布流网格。原版 UWP 用 `VariableSizedWrapGrid` 做首页，
 /// Flutter 侧用 `SliverMasonryGrid`：列宽固定、每列按图片原始比例向下堆，
@@ -21,6 +24,7 @@ class PostGrid extends StatefulWidget {
     this.onLoadMore,
     this.hasMore = false,
     this.isLoadingMore = false,
+    this.initialLoading = false,
     this.heroPrefix = '',
     this.header,
     this.emptyText = '没有内容',
@@ -32,6 +36,12 @@ class PostGrid extends StatefulWidget {
   final VoidCallback? onLoadMore;
   final bool hasMore;
   final bool isLoadingMore;
+
+  /// 首次加载（当前一条结果也没有）。为真时显示骨架网格。
+  ///
+  /// 与 [isLoadingMore] 分开：翻页时列表已经有内容，不该被骨架盖掉。
+  final bool initialLoading;
+
   final String heroPrefix;
 
   /// 列表顶部的附加内容。传 null 时列表占满整个可用高度。
@@ -86,6 +96,20 @@ class _PostGridState extends State<PostGrid> {
 
   @override
   Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: AppTheme.durMed,
+      switchInCurve: AppTheme.curveIn,
+      switchOutCurve: AppTheme.curveOut,
+      child: widget.posts.isEmpty && widget.initialLoading
+          ? const SkeletonGrid(key: ValueKey<String>('skeleton'))
+          : KeyedSubtree(
+              key: const ValueKey<String>('content'),
+              child: _content(context),
+            ),
+    );
+  }
+
+  Widget _content(BuildContext context) {
     const padding = EdgeInsets.fromLTRB(
       AppTheme.pagePadding,
       AppTheme.pagePadding,
@@ -127,19 +151,13 @@ class _PostGridState extends State<PostGrid> {
                 // 12 的缝正好等于圆角半径，视觉上会被「吃掉」显得粘连。
                 mainAxisSpacing: AppTheme.gapL,
                 crossAxisSpacing: AppTheme.gapL,
+                // 尾部留一格空位给「还有下一页」——不在格子流里放进度环：
+                // 瀑布流每列高度不一，尾部的环会出现在最短那列的中间，
+                // 看着像某张图加载失败。真正的进度提示放在视口底部悬浮。
                 childCount: widget.posts.length + (widget.hasMore ? 1 : 0),
                 itemBuilder: (context, index) {
                   if (index >= widget.posts.length) {
-                    return const Padding(
-                      padding: EdgeInsets.symmetric(vertical: AppTheme.gapXl),
-                      child: Center(
-                        child: SizedBox(
-                          width: AppTheme.iconMd,
-                          height: AppTheme.iconMd,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      ),
-                    );
+                    return const SizedBox(height: AppTheme.gapXxl * 2);
                   }
                   final post = widget.posts[index];
                   return PostTile(
@@ -152,9 +170,45 @@ class _PostGridState extends State<PostGrid> {
             ),
         ];
 
-        return CustomScrollView(
-          controller: _controller,
-          slivers: slivers,
+        return Stack(
+          children: [
+            Scrollbar(
+              controller: _controller,
+              thumbVisibility: true,
+              child: ScrollConfiguration(
+                // 桌面端默认不允许鼠标拖动列表：用户按住滚轮/左键往下拽是本能，
+                // 而 Flutter 只认滚动条的点击拖拽。把 mouse 加进 dragDevices 即可。
+                behavior: ScrollConfiguration.of(context).copyWith(
+                  dragDevices: const <PointerDeviceKind>{
+                    PointerDeviceKind.touch,
+                    PointerDeviceKind.mouse,
+                    PointerDeviceKind.trackpad,
+                    PointerDeviceKind.stylus,
+                  },
+                ),
+                child: CustomScrollView(
+                  controller: _controller,
+                  // 预取 600px：桌面滚动一格就是一屏的几分之一，默认缓存太小，
+                  // 快速滚动时会闪白。
+                  scrollCacheExtent: const ScrollCacheExtent.pixels(600),
+                  slivers: slivers,
+                ),
+              ),
+            ),
+            // 翻页进度固定在视口底部，不参与布局，列表不会因此跳动。
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  opacity: widget.isLoadingMore && widget.posts.isNotEmpty ? 1 : 0,
+                  duration: AppTheme.durFast,
+                  child: const LinearProgressIndicator(minHeight: 2),
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
@@ -163,26 +217,9 @@ class _PostGridState extends State<PostGrid> {
   Widget _empty(BuildContext context) {
     final custom = widget.emptyBuilder;
     if (custom != null) return custom(context);
-    return _defaultEmpty(context);
+    return StateMessage(
+      icon: Icons.image_outlined,
+      title: widget.emptyText,
+    );
   }
-
-  Widget _defaultEmpty(BuildContext context) => Padding(
-        padding: const EdgeInsets.all(AppTheme.gapXxl),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.image_outlined,
-              size: AppTheme.iconXl,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(height: AppTheme.gapL),
-            Text(
-              widget.emptyText,
-              style: Theme.of(context).textTheme.bodyMedium,
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      );
 }
