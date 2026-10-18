@@ -147,8 +147,23 @@ flutter::AccessibilityBridge::CreateRemoveReparentedNodesUpdate + 0xba
   本机比对 3.47.4 / 3.47.7 / master 三份 `accessibility_bridge.cc`，**该函数一字未改**
   → 升级 Flutter 解决不了。
 
-**现状**：重写后的 UI 语义树形状不同，不再命中（连跑 10+ 次未复现），但这是绕开、不是修好。
-曾试过在 runner 里拦 `WM_GETOBJECT`（`windows/runner/flutter_window.cpp` + CMake 开关），
-实测语义树照样被启用，**补丁无效、已回退**，不留无用代码。若以后再次复现，方向是：
-把复现数据回报到 #175041、避开 ListView+Tooltip 这类语义嫁接组合、或找出真正启用语义树的那条
-`WM_GETOBJECT` 路径（大概率在 Flutter 的子窗口 HWND 上，不在 runner 的顶层窗口过程里）。
+**已修掉**（`app/windows/runner/flutter_window.cpp`）：在 Flutter 自己创建的
+`FLUTTERVIEW` 子窗口上挂子类过程，把 `WM_GETOBJECT` 一律回 0（等于「本窗口没有可访问内容」），
+引擎因此不会建无障碍树，那条崩溃路径也就不会被走到。
+
+关键是**拦对窗口**：UIA 把 `WM_GETOBJECT` 发给 `FLUTTERVIEW` 子窗口，而不是 runner 的顶层窗口
+`FLUTTER_RUNNER_WIN32_WINDOW` —— 早先只在顶层窗口过程里拦，实测完全无效（语义树照样启用、
+AXTree 报错照样 7~13 条），原因是消息根本没经过那条路径。另外子类化必须**在
+`SetChildContent` 之前**装上（用 `flutter_controller_->view()->GetNativeWindow()` 直接拿 HWND），
+否则窗口可见后 UIA 客户端可能已经抢先问过一轮。
+
+**A/B 实测**（Debug 版，每轮 30 秒，同一份二进制，用临时环境变量开关切换放行/拦截）：
+- 放行 `WM_GETOBJECT`（等价旧行为）：4 轮里 1 轮在 18.3 秒崩（`0xC0000005`），
+  stderr 的 `AXTree` 报错 9~117 条。
+- 拦截 `WM_GETOBJECT`：4 轮全部存活，`AXTree` 报错**恒为 0 条**。
+- 诊断日志（`ax_trace.log`）证实子窗口在启动约 30 毫秒内就收到了 4 次 `WM_GETOBJECT`
+  （lparam 分别是 `0xfffffffc` OBJID_CLIENT 与 `0xfffffff4` OBJID_WINDOW），全部被拦下。
+
+**代价**：屏幕阅读器等辅助技术读不到本应用的内容。对一个以图片为主的壁纸工具是可接受的取舍。
+上游修好后（`flutter/flutter#175041` 关闭、或 `accessibility_bridge.cc:229` 出现空指针判断），
+删掉这段子类化即可恢复无障碍支持。

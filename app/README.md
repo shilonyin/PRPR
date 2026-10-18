@@ -136,11 +136,13 @@ lib/
   所以 `lib/services/system_proxy.dart` 会去读注册表里的 `ProxyEnable` / `ProxyServer`
   并接管所有 `HttpClient`。若你的代理只在 PAC（`AutoConfigURL`）里配，这里读不到，
   需要改成手动填服务器地址，或者用环境变量启动。
-- **Windows 无障碍（屏幕阅读器）是一条已知的引擎崩溃路径。** 系统里只要有 UIA 客户端
-  （PowerToys 的 PowerOCR / QuickAccess、屏幕阅读器、自动化或截图工具）查询过本窗口，
-  Flutter 引擎就会启用无障碍树；引擎在 `accessibility_bridge.cc:229` 处会解引用空指针，
-  release 构建里 `assert` 被编掉，于是直接崩掉整个进程（退出码 `0xC0000005`）。
-  上游 issue：[flutter/flutter#175041](https://github.com/flutter/flutter/issues/175041)，
-  3.24.5～3.47.4 均可复现，本机比对过 3.47.7 与 master，**该函数一字未改**。
-  当前界面恰好不触发（连跑 10+ 次未复现），但那是绕开而不是修好；
-  完整排查过程（含符号化栈与对照实验）见根目录 `MIGRATION.md`。
+- **无障碍（屏幕阅读器）被刻意关闭。** Flutter 引擎在 `accessibility_bridge.cc:229` 有个空指针
+  崩溃：只要系统里有 UIA 客户端（PowerToys 的 PowerOCR / QuickAccess、屏幕阅读器、自动化或
+  截图工具）查询过本窗口，引擎就会启用无障碍树，随后在语义树重挂时空指针解引用，
+  release 构建里 `assert` 被编掉，整个进程直接消失（退出码 `0xC0000005`，出错模块
+  `flutter_windows.dll`）。上游 issue：
+  [flutter/flutter#175041](https://github.com/flutter/flutter/issues/175041)，3.24.5～3.47.7 均可复现。
+  规避方式是在 `windows/runner/flutter_window.cpp` 里给 `FLUTTERVIEW` 子窗口挂子类过程，
+  把 `WM_GETOBJECT` 一律回 0，引擎就不会建无障碍树。**代价是屏幕阅读器读不到应用内容** ——
+  对图片壁纸工具是可接受的取舍。引擎修好后删掉那段子类化即可。
+  完整排查过程（符号化栈、A/B 对照、为什么必须拦子窗口）见根目录 `MIGRATION.md`。
