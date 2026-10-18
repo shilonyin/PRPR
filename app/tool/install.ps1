@@ -1,4 +1,4 @@
-<#
+﻿<#
   把 PRPR 安装到当前用户目录，并创建开始菜单 / 桌面快捷方式。
   不需要管理员权限，不写注册表（卸载就是删目录 + 删两个快捷方式）。
 
@@ -8,13 +8,18 @@
 #>
 [CmdletBinding()]
 param(
-  [string]$Source = (Join-Path $PSScriptRoot '..\build\windows\x64\runner\Release'),
-  [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\PRPR'),
+  [string]$Source,
+  [string]$InstallDir,
   [switch]$NoDesktopShortcut,
   [switch]$NoLaunch
 )
 
 $ErrorActionPreference = 'Stop'
+
+# 刻意不在 param 默认值里用 $PSScriptRoot：用 -File 调用时那里还是空的（实测 PS 5.1），
+# 放到脚本体里才有值。同理 $InstallDir 的默认值也只能在这里算。
+if (-not $Source) { $Source = Join-Path $PSScriptRoot '..\build\windows\x64\runner\Release' }
+if (-not $InstallDir) { $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\PRPR' }
 
 if (-not (Test-Path -LiteralPath (Join-Path $Source 'PRPR.exe'))) {
   throw "找不到 PRPR.exe，请先构建：flutter build windows --release（当前查找位置：$Source）"
@@ -22,7 +27,18 @@ if (-not (Test-Path -LiteralPath (Join-Path $Source 'PRPR.exe'))) {
 
 Write-Host "安装目录：$InstallDir"
 if (Test-Path -LiteralPath $InstallDir) {
-  Write-Host '目录已存在，先清理旧文件'
+  # 正在运行的实例会锁住 dartcv.dll 之类被加载的文件，必须先把进程停掉，
+  # 否则 Remove-Item 会半途失败、留下一个残缺的安装目录。
+  $running = @(Get-Process -Name 'PRPR' -ErrorAction SilentlyContinue)
+  if ($running.Count -gt 0) {
+    Write-Host "先关闭正在运行的 $($running.Count) 个 PRPR 实例"
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    $deadline = (Get-Date).AddSeconds(5)
+    while ((Get-Process -Name 'PRPR' -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+      Start-Sleep -Milliseconds 100
+    }
+  }
+  Write-Host '清理旧文件'
   Remove-Item -LiteralPath $InstallDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null

@@ -1,4 +1,4 @@
-<#
+﻿<#
     构建辅助脚本。
 
     存在的唯一理由：opencv_dart 通过 native assets hook 编译 OpenCV，

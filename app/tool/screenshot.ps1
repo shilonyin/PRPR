@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Exe = 'F:\PRPR\app\build\windows\x64\runner\Release\PRPR.exe',
   [int]$Wait = 8,
   [string]$Out = 'F:\PRPR\shot.png',
