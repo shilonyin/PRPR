@@ -1,0 +1,60 @@
+name: prpr
+description: A booru wallpaper client for Windows, rebuilt with Flutter.
+publish_to: 'none'
+version: 3.0.0+1
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  # --- 网络与解析 ---
+  http: ^1.6.0
+  html: ^0.15.7
+  xml: ^7.1.0
+  crypto: ^3.0.7
+  # --- 本地存储 ---
+  shared_preferences: ^2.5.3
+  path_provider: ^2.1.6
+  # --- 状态管理 ---
+  provider: ^6.1.5
+  # --- 桌面窗口 ---
+  window_manager: ^0.5.2
+  # --- Windows 系统集成 ---
+  win32: ^5.14.0
+  ffi: ^2.2.0
+  # --- 图片与人脸检测 ---
+  opencv_dart: ^2.2.2
+  cached_network_image: ^4.0.4
+  flutter_staggered_grid_view: ^0.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
+
+# dartcv4（opencv_dart 的底层实现）用 native assets hook 从源码编译 OpenCV。
+# 它默认只编 core + imgcodecs + imgproc；include_modules 一旦出现就会**整体替换**
+# 默认集合，所以要用的模块必须一个不落地列全。
+#
+# 本项目的人脸检测走 cv.CascadeClassifier，属于 objdetect，
+# 不显式列出来就会编译出一个没有 objdetect 的 OpenCV，
+# 症状是运行时才炸（符号找不到），排查成本很高。
+# objdetect 依赖的 calib3d / features2d / flann 由 opencv 的 CMake 依赖闭包自动打开。
+#
+# 别顺手把 dnn / video / highgui 之类加进来：编全量模块会让首次构建从
+# 十几分钟变成一小时以上，而且本项目一个都用不到。
+hooks:
+  user_defines:
+    dartcv4:
+      include_modules:
+        - imgcodecs
+        - imgproc
+        - objdetect

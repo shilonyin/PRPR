@@ -1,0 +1,575 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../../core/constants.dart';
+import '../../models/post_filter.dart';
+import '../../services/app_settings.dart';
+import '../../services/crop.dart';
+import '../../services/wallpaper_service.dart';
+import '../../services/yande_client.dart';
+import '../app_state.dart';
+import '../theme.dart';
+import '../widgets/app_text_field.dart';
+import 'about_page.dart';
+
+/// 设置页。对应原 UWP 的 `SettingPage` + `SettingWallpaperPage` +
+/// `SettingLockscreenPage` + `AccountView` 四个页面。
+///
+/// 原版拆成四页是因为手机竖屏一页放不下；桌面上横向空间足够，
+/// 合到一页里用分区更省事，也避免用户在四个页面之间来回找。
+class SettingsPage extends StatefulWidget {
+  const SettingsPage({super.key});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  final TextEditingController _hostController = TextEditingController();
+  final TextEditingController _saltController = TextEditingController();
+  final TextEditingController _userController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _tagsController = TextEditingController();
+  final TextEditingController _blacklistController = TextEditingController();
+
+  bool _signingIn = false;
+
+  /// 校验失败时的错误文案，直接显示在对应输入框下方（errorText）。
+  String? _hostError;
+  String? _userError;
+  String? _passwordError;
+
+  @override
+  void initState() {
+    super.initState();
+    final s = context.read<AppSettings>();
+    _hostController.text = s.host;
+    _saltController.text = s.passwordHashSalt;
+    _userController.text = s.userName ?? '';
+    _tagsController.text = s.defaultTags;
+    _blacklistController.text = s.filter.tagBlacklist;
+  }
+
+  @override
+  void dispose() {
+    _hostController.dispose();
+    _saltController.dispose();
+    _userController.dispose();
+    _passwordController.dispose();
+    _tagsController.dispose();
+    _blacklistController.dispose();
+    super.dispose();
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// 用户一动手就把旧错误收掉，不要让它一直红着。
+  void _clearHostError() {
+    if (_hostError != null) setState(() => _hostError = null);
+  }
+
+  void _clearUserError() {
+    if (_userError != null) setState(() => _userError = null);
+  }
+
+  void _clearPasswordError() {
+    if (_passwordError != null) setState(() => _passwordError = null);
+  }
+
+  /// 读改存 [PostFilter]：设置页里每个勾选框都走这里。
+  ///
+  /// 用不可变 copyWith 而不是直接改字段，是刻意的 —— 过滤器会被
+  /// `AppState` 按引用比较来跳过重复的列表重建。
+  void _patchFilter(PostFilter Function(PostFilter) update) {
+    final settings = context.read<AppSettings>();
+    settings.filter = update(settings.filter);
+    setState(() {});
+  }
+
+  Future<void> _signIn() async {
+    final user = _userController.text.trim();
+    final password = _passwordController.text;
+    if (user.isEmpty || password.isEmpty) {
+      setState(() {
+        _userError = user.isEmpty ? '请输入用户名' : null;
+        _passwordError = password.isEmpty ? '请输入密码' : null;
+      });
+      _toast('请填写用户名和密码');
+      return;
+    }
+    setState(() {
+      _signingIn = true;
+      _userError = null;
+      _passwordError = null;
+    });
+    final state = context.read<AppState>();
+    try {
+      final result = await state.client.signIn(user, password);
+      if (!result.success) {
+        setState(() => _passwordError = result.message ?? '登录失败');
+        _toast(result.message ?? '登录失败');
+        return;
+      }
+      final settings = state.settings;
+      settings.userName = user;
+      settings.userId = result.userId;
+      settings.passwordHash =
+          YandeClient.hashPassword(password, settings.passwordHashSalt);
+      _passwordController.clear();
+      _toast('登录成功');
+    } catch (e) {
+      _toast('$e');
+    } finally {
+      if (mounted) setState(() => _signingIn = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.watch<AppSettings>();
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(
+        AppTheme.pagePadding,
+        AppTheme.pagePadding,
+        AppTheme.pagePadding,
+        48,
+      ),
+      children: [
+        _section(context, '站点', [
+          _textField(
+            controller: _hostController,
+            label: '站点地址',
+            hint: AppConstants.defaultHost,
+            helper: '支持 yande.re、konachan.com 等同构站点。改完点右侧应用。',
+            icon: Icons.language,
+            errorText: _hostError,
+            onChanged: (_) => _clearHostError(),
+            trailing: FilledButton(
+              onPressed: () {
+                final value = _hostController.text.trim();
+                if (value.isEmpty) {
+                  setState(() => _hostError = '站点地址不能为空');
+                  _toast('站点地址不能为空');
+                  return;
+                }
+                setState(() => _hostError = null);
+                settings.host = value.replaceAll(RegExp(r'/+$'), '');
+                _toast('已切换到 ${settings.host}');
+              },
+              child: const Text('应用'),
+            ),
+          ),
+          _textField(
+            controller: _saltController,
+            label: '密码哈希盐',
+            helper: '站点登录表单里的隐藏字段。yande 系站点默认值已填好，不用改。',
+            icon: Icons.vpn_key_outlined,
+            onChanged: (v) => settings.passwordHashSalt = v.trim(),
+          ),
+        ]),
+        _section(context, '账号', [
+          if (settings.isLoggedIn)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.account_circle_outlined),
+              title: Text(settings.userName ?? ''),
+              subtitle: Text('用户 ID：${settings.userId}'),
+              trailing: TextButton(
+                onPressed: () {
+                  settings.signOut();
+                  setState(() {});
+                  _toast('已退出登录');
+                },
+                child: const Text('退出登录'),
+              ),
+            )
+          else ...[
+            Text(
+              '只有登录后才能收藏、投票、看自己的收藏夹。密码不会被保存，'
+              '登录成功后本地只留 SHA1 哈希。',
+              style: AppTheme.hint(context),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: AppTextField(
+                    controller: _userController,
+                    label: '用户名',
+                    prefixIcon: const Icon(Icons.person_outline, size: 20),
+                    errorText: _userError,
+                    onChanged: (_) => _clearUserError(),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: AppTextField(
+                    controller: _passwordController,
+                    label: '密码',
+                    prefixIcon: const Icon(Icons.lock_outline, size: 20),
+                    obscureText: true,
+                    errorText: _passwordError,
+                    onChanged: (_) => _clearPasswordError(),
+                    onSubmitted: (_) => _signIn(),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                // 输入框浮动标签占了一行，按钮跟着往下压一点才对得齐。
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: FilledButton(
+                    onPressed: _signingIn ? null : _signIn,
+                    child: Text(_signingIn ? '登录中…' : '登录'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ]),
+        _section(context, '换壁纸', [
+          _dropdown<int>(
+            label: '裁剪方式',
+            value: settings.cropMethodIndex,
+            items: <int, String>{
+              for (final m in CropMethod.values) m.value: _cropLabel(m),
+            },
+            onChanged: (v) => settings.cropMethodIndex = v,
+          ),
+          _dropdown<int>(
+            label: '画质',
+            value: settings.qualityLevel,
+            items: const <int, String>{
+              0: '预览图（快，省流量）',
+              1: 'JPEG 大图（平衡）',
+              2: '原图（最清晰）',
+            },
+            onChanged: (v) => settings.qualityLevel = v,
+          ),
+          _dropdown<int>(
+            label: '壁纸契合度',
+            value: settings.fitMode,
+            items: WallpaperService.fitModeLabels,
+            onChanged: (v) => settings.fitMode = v,
+          ),
+          _slider(
+            label: '随机范围',
+            value: settings.shuffleWindow.toDouble(),
+            min: 1,
+            max: AppConstants.maxShuffleWindow.toDouble(),
+            divisions: AppConstants.maxShuffleWindow - 1,
+            display: '${settings.shuffleWindow} 张',
+            onChanged: (v) => settings.shuffleWindow = v.round(),
+          ),
+          _textField(
+            controller: _tagsController,
+            label: '默认标签',
+            hint: '例如 landscape sky',
+            helper: '点「换一张壁纸」且没指定标签时用这串搜索。留空则从全站随机。',
+            icon: Icons.tag,
+            onChanged: (v) => settings.defaultTags = v.trim(),
+          ),
+        ]),
+        _section(context, '自动换壁纸', [
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('启用'),
+            subtitle: const Text('程序运行期间按下面的间隔自动换'),
+            value: settings.autoChangeEnabled,
+            onChanged: (v) {
+              settings.autoChangeEnabled = v;
+              setState(() {});
+            },
+          ),
+          _slider(
+            label: '间隔',
+            value: settings.autoChangeMinutes.toDouble().clamp(1, 1440),
+            min: 1,
+            max: 1440,
+            divisions: 1439,
+            display: _minutesLabel(settings.autoChangeMinutes),
+            onChanged: settings.autoChangeEnabled
+                ? (v) => settings.autoChangeMinutes = v.round()
+                : null,
+          ),
+          if (settings.autoChangeEnabled)
+            Text(
+              '注意：只在程序开着的时候生效，关闭程序后不会再换。'
+              '想要真正的后台定时，需要本机计划任务，那是另一个功能。',
+              style: AppTheme.hint(context),
+            ),
+        ]),
+        _section(context, '内容筛选', [
+          const _SubHeader('分级'),
+          _check(
+            title: 'Safe',
+            value: settings.filter.isFilterSafe,
+            onChanged: (v) => _patchFilter(
+              (f) => f.copyWith(isFilterSafe: v),
+            ),
+          ),
+          _check(
+            title: 'Questionable',
+            value: settings.filter.isFilterQuestionable,
+            onChanged: (v) => _patchFilter(
+              (f) => f.copyWith(isFilterQuestionable: v),
+            ),
+          ),
+          _check(
+            title: 'Explicit',
+            value: settings.filter.isFilterExplicit,
+            onChanged: (v) => _patchFilter(
+              (f) => f.copyWith(isFilterExplicit: v),
+            ),
+          ),
+          const _SubHeader('方向'),
+          _check(
+            title: '横图',
+            value: settings.filter.isFilterHorizontal,
+            onChanged: (v) => _patchFilter(
+              (f) => f.copyWith(isFilterHorizontal: v),
+            ),
+          ),
+          _check(
+            title: '竖图',
+            value: settings.filter.isFilterVertical,
+            onChanged: (v) => _patchFilter(
+              (f) => f.copyWith(isFilterVertical: v),
+            ),
+          ),
+          const _SubHeader('其他'),
+          _check(
+            title: '包含被隐藏的图片',
+            subtitle: '站点标记为隐藏（hidden）的帖子',
+            value: settings.filter.isFilterAllowHidden,
+            onChanged: (v) => _patchFilter(
+              (f) => f.copyWith(isFilterAllowHidden: v),
+            ),
+          ),
+          _check(
+            title: '包含被挂起的图片',
+            subtitle: '审核中的帖子（held）',
+            value: settings.filter.isFilterAllowHeld,
+            onChanged: (v) => _patchFilter(
+              (f) => f.copyWith(isFilterAllowHeld: v),
+            ),
+          ),
+          const SizedBox(height: 12),
+          AppTextField(
+            controller: _blacklistController,
+            label: '标签黑名单',
+            helper: '空格分隔。命中任一标签的图片不会出现在任何列表里。',
+            prefixIcon: const Icon(Icons.block, size: 20),
+            // 至少 3 行好读，最多 6 行后自己滚，避免黑名单太长把页面撑爆。
+            minLines: 3,
+            maxLines: 6,
+            onChanged: (v) => _patchFilter((f) => f.copyWith(tagBlacklist: v.trim())),
+          ),
+        ]),
+        _section(context, '外观', [
+          _dropdown<int>(
+            label: '主题',
+            value: settings.themeModeIndex,
+            items: const <int, String>{
+              0: '跟随系统',
+              1: '浅色',
+              2: '深色',
+            },
+            onChanged: (v) => settings.themeModeIndex = v,
+          ),
+        ]),
+        _section(context, '关于', [
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.info_outline),
+            title: const Text('关于 PRPR'),
+            subtitle: const Text('版本、开源许可与致谢'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const AboutPage()),
+            ),
+          ),
+        ]),
+      ],
+    );
+  }
+
+  Widget _section(BuildContext context, String title, List<Widget> children) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 28),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(title, style: AppTheme.sectionTitle(context)),
+          const SizedBox(height: 12),
+          ...children,
+        ],
+      ),
+    );
+  }
+
+  Widget _textField({
+    required TextEditingController controller,
+    required String label,
+    String? hint,
+    String? helper,
+    String? errorText,
+    IconData? icon,
+    Widget? trailing,
+    ValueChanged<String>? onChanged,
+    ValueChanged<String>? onSubmitted,
+  }) {
+    final field = AppTextField(
+      controller: controller,
+      label: label,
+      hint: hint,
+      helper: helper,
+      errorText: errorText,
+      prefixIcon: icon == null ? null : Icon(icon, size: 20),
+      onChanged: onChanged,
+      onSubmitted: onSubmitted,
+    );
+    if (trailing == null) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: field,
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(child: field),
+          const SizedBox(width: 12),
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: trailing,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dropdown<T>({
+    required String label,
+    required T value,
+    required Map<T, String> items,
+    required ValueChanged<T> onChanged,
+  }) {
+    // 值可能因为历史数据落在合法集合之外，回退到第一项，避免 Dropdown 崩。
+    final safeValue = items.containsKey(value) ? value : items.keys.first;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
+          ),
+          Expanded(
+            child: DropdownButtonFormField<T>(
+              initialValue: safeValue,
+              isExpanded: true,
+              items: [
+                for (final entry in items.entries)
+                  DropdownMenuItem<T>(
+                    value: entry.key,
+                    child: Text(entry.value),
+                  ),
+              ],
+              onChanged: (v) {
+                if (v != null) onChanged(v);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _slider({
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required int divisions,
+    required String display,
+    required ValueChanged<double>? onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
+          ),
+          Expanded(
+            child: Slider(
+              value: value.clamp(min, max),
+              min: min,
+              max: max,
+              divisions: divisions,
+              onChanged: onChanged,
+              onChangeEnd: onChanged,
+              label: display,
+            ),
+          ),
+          SizedBox(
+            width: 84,
+            child: Text(display, textAlign: TextAlign.right),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _check({
+    required String title,
+    String? subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) =>
+      CheckboxListTile(
+        contentPadding: EdgeInsets.zero,
+        dense: true,
+        title: Text(title),
+        subtitle: subtitle == null ? null : Text(subtitle),
+        value: value,
+        onChanged: (v) => onChanged(v ?? false),
+      );
+
+  static String _cropLabel(CropMethod m) => switch (m) {
+        CropMethod.none => '不裁剪',
+        CropMethod.topMiddle => '顶部居中',
+        CropMethod.center => '居中',
+        CropMethod.biggestFace => '以最大的人脸为中心',
+        CropMethod.mostFaces => '尽可能多的人脸',
+      };
+
+  static String _minutesLabel(int minutes) {
+    if (minutes < 60) return '$minutes 分钟';
+    final hours = minutes ~/ 60;
+    final rest = minutes % 60;
+    return rest == 0 ? '$hours 小时' : '$hours 小时 $rest 分';
+  }
+}
+
+class _SubHeader extends StatelessWidget {
+  const _SubHeader(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.only(top: 8, bottom: 4),
+        child: Text(text, style: AppTheme.hint(context)),
+      );
+}
