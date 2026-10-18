@@ -30,9 +30,21 @@ powershell -ExecutionPolicy Bypass -File tool\install.ps1
 
 ## 界面
 
+搜索页。搜索框固定在顶部，滚动瀑布流时不会跟着滚走；瓦片悬停会描边并显示原图尺寸和分级。
+
 ![搜索页](../docs/screenshots/search.png)
 
+设置页。所有输入项统一成「左侧标签 + 右侧控件」一列，每段一张卡片，整页限宽 880。
+
 ![设置页](../docs/screenshots/settings.png)
+
+帖子详情。左侧大图、右侧画质 / 操作 / 评分 / 资料 / 标签五段。
+
+![详情页](../docs/screenshots/detail.png)
+
+连不上站点时的错误页。失败原因留在界面上（不只是闪一下的提示条），并给出重试按钮。
+
+![错误页](../docs/screenshots/offline.png)
 
 ## 运行要求
 
