@@ -5,11 +5,16 @@ import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'services/app_settings.dart';
+import 'services/system_proxy.dart';
 import 'ui/app_state.dart';
 import 'ui/pages/home_page.dart';
 import 'ui/theme.dart';
 
 Future<void> main() async {
+  // 必须在任何 HttpClient 创建之前：让 CachedNetworkImage、http 包、
+  // flutter_cache_manager 全都走系统代理，否则双击启动时网络请求会静默直连。
+  SystemProxy.install();
+
   WidgetsFlutterBinding.ensureInitialized();
 
   // 桌面窗口：给一个合理的初始尺寸并居中，

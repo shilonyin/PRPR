@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:html/parser.dart' as html_parser;
@@ -65,10 +67,40 @@ class YandeClient {
 
   void dispose() => _http.close();
 
+  /// 单次请求的超时。
+  ///
+  /// 必须显式设置：`http` 包底层是 `dart:io` 的 `HttpClient`，连接超时默认无限，
+  /// 直连 yande.re 这种被墙的站点时会卡在 TCP 握手上一分多钟，界面上就是一直转圈。
+  /// 12 秒足够正常的跨境代理往返，又不会让用户对着转圈等到放弃。
+  static const Duration timeout = Duration(seconds: 12);
+
   Map<String, String> _headers({String? referer}) => <String, String>{
         'User-Agent': AppConstants.userAgent,
         'Referer': ?referer,
       };
+
+  /// 统一包装 GET/POST：加超时，并把各种底层异常翻译成人能看懂的一句话。
+  ///
+  /// 原版跑在 UWP 里，网络异常由系统抛；桌面版要自己把
+  /// `SocketException` / `TimeoutException` / `HandshakeException`
+  /// 变成「连不上站点，检查代理」这种用户能行动的信息。
+  Future<http.Response> _send(
+    Future<http.Response> Function() request,
+  ) async {
+    try {
+      return await request().timeout(timeout);
+    } on TimeoutException {
+      throw YandeException('连接站点超时（12 秒），请检查网络或代理设置');
+    } on SocketException catch (e) {
+      final detail = e.message;
+      throw YandeException('无法连接站点：$detail。请检查网络或代理设置');
+    } on HandshakeException {
+      throw YandeException('与站点的 TLS 握手失败，代理可能没有正确转发 HTTPS');
+    } on http.ClientException catch (e) {
+      final detail = e.message;
+      throw YandeException('请求失败：$detail');
+    }
+  }
 
   /// 计算 yande 系站的密码哈希：把盐里的 `your-password` 换成明文密码，再取 SHA1。
   ///
@@ -92,7 +124,9 @@ class YandeClient {
     int limit = AppConstants.postsPageLimit,
   }) async {
     final url = '$_host$uri&page=$page&limit=$limit';
-    final response = await _http.get(Uri.parse(url), headers: _headers());
+    final response = await _send(
+      () => _http.get(Uri.parse(url), headers: _headers()),
+    );
     if (response.statusCode != 200) {
       throw YandeException('拉取帖子失败：HTTP ${response.statusCode}');
     }
@@ -128,9 +162,11 @@ class YandeClient {
   /// 原版 `GET {HOST}/tag/summary.json`，响应形如
   /// `{"version": 123, "data": "1\`artist_name\`... 3\`copyright\`..."}`
   Future<String> downloadTagSummary() async {
-    final response = await _http.get(
-      Uri.parse('$_host/tag/summary.json'),
-      headers: _headers(),
+    final response = await _send(
+      () => _http.get(
+        Uri.parse('$_host/tag/summary.json'),
+        headers: _headers(),
+      ),
     );
     if (response.statusCode != 200) {
       throw YandeException('拉取标签库失败：HTTP ${response.statusCode}');
@@ -155,9 +191,11 @@ class YandeClient {
   ///
   /// 原版用 HtmlAgilityPack 的 `//meta[@name='csrf-token']` 的 content。
   Future<String?> fetchAuthenticityToken() async {
-    final response = await _http.get(
-      Uri.parse('$_host/user/login'),
-      headers: _headers(),
+    final response = await _send(
+      () => _http.get(
+        Uri.parse('$_host/user/login'),
+        headers: _headers(),
+      ),
     );
     if (response.statusCode != 200) return null;
     final doc = html_parser.parse(response.body);
@@ -176,19 +214,21 @@ class YandeClient {
       return const SignInResult(success: false, message: '无法取得登录令牌（csrf-token）');
     }
 
-    final response = await _http.post(
-      Uri.parse('$_host/user/authenticate'),
-      headers: {
-        ..._headers(referer: '$_host/user/login'),
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: <String, String>{
-        'authenticity_token': token,
-        'url': '',
-        'user[name]': userName,
-        'user[password]': password,
-        'commit': 'Login',
-      },
+    final response = await _send(
+      () => _http.post(
+        Uri.parse('$_host/user/authenticate'),
+        headers: {
+          ..._headers(referer: '$_host/user/login'),
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: <String, String>{
+          'authenticity_token': token,
+          'url': '',
+          'user[name]': userName,
+          'user[password]': password,
+          'commit': 'Login',
+        },
+      ),
     );
 
     if (response.statusCode != 200 && response.statusCode != 302) {
@@ -234,7 +274,9 @@ class YandeClient {
       'score': '${vote.value}',
     });
 
-    final response = await _http.post(uri, headers: _headers());
+    final response = await _send(
+      () => _http.post(uri, headers: _headers()),
+    );
     if (response.statusCode != 200) return false;
     // 站点对投票成功的响应包含 <success>true</success> 或直接给出新分值
     final body = response.body;
@@ -257,7 +299,9 @@ class YandeClient {
       'id': '$postId',
     });
 
-    final response = await _http.post(uri, headers: _headers());
+    final response = await _send(
+      () => _http.post(uri, headers: _headers()),
+    );
     if (response.statusCode != 200) return VoteType.none;
 
     final body = response.body;
@@ -290,8 +334,12 @@ class YandeClient {
       );
 
   /// 构造图片下载地址。原版下载时会带 Referer 头，否则站点会拒绝。
-  Future<http.Response> downloadImage(String url) =>
-      _http.get(Uri.parse(url), headers: _headers(referer: '$_host/'));
+  Future<http.Response> downloadImage(String url) => _send(
+        () => _http.get(
+          Uri.parse(url),
+          headers: _headers(referer: '$_host/'),
+        ),
+      );
 }
 
 /// 站点交互异常。

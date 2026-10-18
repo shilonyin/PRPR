@@ -10,6 +10,23 @@
 - 一键设置为壁纸，以及定时自动更换
 - 每日精选、历史记录、内容分级筛选
 
+## 安装到本机
+
+不想每次都从 `build\` 目录里找 exe 的话，用附带脚本装到当前用户目录：
+
+```powershell
+cd app
+powershell -ExecutionPolicy Bypass -File tool\install.ps1
+```
+
+它会做四件事：把 `build\windows\x64\runner\Release` 整个复制到
+`%LOCALAPPDATA%\Programs\PRPR`、在开始菜单和桌面各建一个快捷方式、
+在安装目录里留一份 `卸载.ps1`、然后启动一次。
+
+不需要管理员权限，也不写注册表 —— 卸载就是跑那个 `卸载.ps1`（或者手动删目录 + 两个快捷方式）。
+设置、下载的壁纸和历史记录在 `%APPDATA%\io.github.shilonyin\prpr`，卸载脚本**不会**删，
+想彻底清干净要自己动手。
+
 ## 界面
 
 ![搜索页](../docs/screenshots/search.png)
@@ -112,6 +129,13 @@ lib/
 - **不移植开始菜单磁贴。** Windows 11 已经移除磁贴，原版的 `SetTileAsync` 没有意义。
 - **历史记录改用 JSON 文件**（原来是 EF Core + SQLite），数据量很小，不值得为此背一个平台插件和迁移维护成本。
 - 自动更换壁纸只在程序运行期间生效，**没有后台常驻服务**。
+- **请求 12 秒超时。** 见 `YandeClient.timeout`。直连被墙站点时 TCP 握手默认无限等，
+  界面会一直转圈；超时后显示可重试的错误页而不是无限加载。
+- **代理只认系统设置，不认 PAC 脚本。** Dart 的 `HttpClient` 原生只读 `HTTP_PROXY` 这类环境变量，
+  完全不看 Windows「设置 → 网络和 Internet → 代理」。双击快捷方式启动时环境变量是空的，
+  所以 `lib/services/system_proxy.dart` 会去读注册表里的 `ProxyEnable` / `ProxyServer`
+  并接管所有 `HttpClient`。若你的代理只在 PAC（`AutoConfigURL`）里配，这里读不到，
+  需要改成手动填服务器地址，或者用环境变量启动。
 - **Windows 无障碍（屏幕阅读器）是一条已知的引擎崩溃路径。** 系统里只要有 UIA 客户端
   （PowerToys 的 PowerOCR / QuickAccess、屏幕阅读器、自动化或截图工具）查询过本窗口，
   Flutter 引擎就会启用无障碍树；引擎在 `accessibility_bridge.cc:229` 处会解引用空指针，

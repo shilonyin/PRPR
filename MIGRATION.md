@@ -95,6 +95,31 @@ Flutter 桌面 + `win32` 包能直接调 `SystemParametersInfo` 设置壁纸，�
 `app/tool/screenshot.ps1` 可以把窗口置顶后只截这个应用的窗口矩形（截图前会让进程 DPI 感知，
 否则 125% 缩放下 `GetWindowRect` 给逻辑坐标、`CopyFromScreen` 按物理坐标拷，图会偏移并被裁掉一截）。
 
+## 桌面版新增的两块基础设施
+
+原版跑在 UWP 沙箱里，有两件事是系统白送的，搬到 Win32 桌面就得自己做：
+
+**1. 系统代理（`app/lib/services/system_proxy.dart`）**
+
+Dart 的 `HttpClient` 只读 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量，**完全不看**
+Windows 的 WinINET 代理配置（注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
+下的 `ProxyEnable` / `ProxyServer`）。开发时从终端启动、环境变量还在，看不出问题；
+一旦从桌面快捷方式双击，环境变量是空的，所有请求静默直连 —— 在国内表现为瀑布流空白、
+缩略图一直转圈，而且界面上没有任何错误提示。
+
+处理：`main()` 第一行调 `SystemProxy.install()`，先看环境变量、再读注册表，
+用 `HttpOverrides.global` 给每个新建的 `HttpClient` 挂上 `findProxy`。
+本机地址（localhost / 127.0.0.1 / ::1）走 `DIRECT`，否则访问本地服务会被代理搅乱。
+**必须在创建任何 HttpClient 之前调用**，所以放在 `main()` 最开头、`WidgetsFlutterBinding` 之前。
+不支持的：PAC（`AutoConfigURL`）—— 解析 PAC 要跑一遍 JS，不划算。
+
+**2. 本机安装（`app/tool/install.ps1`）**
+
+UWP 由商店负责安装和卸载，桌面版没有这层。脚本把 Release 目录复制到
+`%LOCALAPPDATA%\Programs\PRPR`，用 `WScript.Shell` 建开始菜单和桌面快捷方式，
+并在安装目录留一份自删的 `卸载.ps1`。不申请管理员权限、不写注册表，
+所以「已安装程序」列表里看不到它 —— 这是刻意的取舍，省掉一整套安装器工程。
+
 ## 已知上游 bug：Windows 无障碍桥空指针（flutter/flutter#175041）
 
 **症状**：release 版启动几秒后无任何 Dart 异常直接消失，退出码 `0xC0000005`（ACCESS_VIOLATION），

@@ -21,6 +21,7 @@ class PostGrid extends StatefulWidget {
     this.heroPrefix = '',
     this.header,
     this.emptyText = '没有内容',
+    this.emptyBuilder,
   });
 
   final List<Post> posts;
@@ -34,6 +35,10 @@ class PostGrid extends StatefulWidget {
   final Widget? header;
 
   final String emptyText;
+
+  /// 自定义空状态。给了它就不再使用 [emptyText]。
+  /// 需要「加载失败 + 重试按钮」这类带交互的空状态时用。
+  final WidgetBuilder? emptyBuilder;
 
   @override
   State<PostGrid> createState() => _PostGridState();
@@ -139,7 +144,13 @@ class _PostGridState extends State<PostGrid> {
     );
   }
 
-  Widget _empty(BuildContext context) => Padding(
+  Widget _empty(BuildContext context) {
+    final custom = widget.emptyBuilder;
+    if (custom != null) return custom(context);
+    return _defaultEmpty(context);
+  }
+
+  Widget _defaultEmpty(BuildContext context) => Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,

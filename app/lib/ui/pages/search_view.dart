@@ -127,10 +127,102 @@ class _SearchViewState extends State<SearchView> {
           hasMore: state.hasMoreFor(query),
           isLoadingMore: state.isLoading,
           emptyText: state.isLoading ? '正在加载…' : '没有找到符合条件的图片',
+          emptyBuilder: (context) => _emptyState(context, state),
           onOpen: _open,
           onLoadMore: () => state.loadMore(query),
           header: _header(context, state),
         ),
+      ),
+    );
+  }
+
+  /// 空状态。
+  ///
+  /// 失败信息不能只靠 SnackBar —— 它四秒就消失，用户回来只看到「没有找到符合条件的图片」，
+  /// 会以为是搜索词的问题。国内网络下最常见的原因恰恰是代理没生效，必须留在界面上。
+  Widget _emptyState(BuildContext context, AppState state) {
+    final theme = Theme.of(context);
+    final error = state.error;
+
+    if (state.isLoading) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 3),
+            ),
+            const SizedBox(height: 16),
+            Text('正在加载…', style: theme.textTheme.bodyMedium),
+          ],
+        ),
+      );
+    }
+
+    if (error != null) {
+      return Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.cloud_off_outlined,
+              size: 48,
+              color: theme.colorScheme.error,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '加载失败',
+              style: theme.textTheme.titleSmall,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              error,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              textAlign: TextAlign.center,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '如果是国内网络，请确认系统代理已开启',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            FilledButton.tonalIcon(
+              onPressed: () => state.search(state.query, force: true),
+              icon: const Icon(Icons.refresh),
+              label: const Text('重试'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.image_outlined,
+            size: 48,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '没有找到符合条件的图片',
+            style: theme.textTheme.bodyMedium,
+            textAlign: TextAlign.center,
+          ),
+        ],
       ),
     );
   }
@@ -210,7 +302,7 @@ class _SearchViewState extends State<SearchView> {
             ),
             if (postsCount(state) > 0)
               Text(
-                '共 $totalCount(state) 张',
+                '共 ${totalCount(state)} 张',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
           ],

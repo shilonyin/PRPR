@@ -125,7 +125,7 @@ class AppState extends ChangeNotifier {
       _loadedPage[trimmed] = 1;
       _totalCount[trimmed] = page.totalCount;
     } catch (e) {
-      error = e.toString();
+      error = describeError(e);
       _pages[trimmed] = <Post>[];
       _loadedPage[trimmed] = 0;
       _totalCount[trimmed] = 0;
@@ -157,12 +157,19 @@ class AppState extends ChangeNotifier {
       _loadedPage[trimmed] = loaded + 1;
       _totalCount[trimmed] = page.totalCount;
     } catch (e) {
-      error = e.toString();
+      error = describeError(e);
     } finally {
       isLoading = false;
       notifyListeners();
     }
   }
+
+  /// 把异常翻译成给用户看的一句话。
+  ///
+  /// [YandeException] 的 message 本来就是人话，但它的 toString() 会加上
+  /// 'YandeException: ' 前缀 —— 直接显示在界面上很丑，所以单独取 message。
+  static String describeError(Object e) =>
+      e is YandeException ? e.message : e.toString();
 
   // ---------- 收藏 ----------
 
@@ -206,7 +213,7 @@ class AppState extends ChangeNotifier {
       favoritePosts = page.items;
     } catch (e) {
       favoritePosts = <Post>[];
-      error = e.toString();
+      error = describeError(e);
     } finally {
       isLoadingFavorites = false;
       notifyListeners();
