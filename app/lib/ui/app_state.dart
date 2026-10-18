@@ -308,13 +308,18 @@ class AppState extends ChangeNotifier {
 
     final minutes = settings.autoChangeMinutes;
     _autoTimer = Timer.periodic(Duration(minutes: minutes), (_) async {
+      // 走 changeWallpaper 而不是 engine.changeWallpaper：定时换壁纸和手动换壁纸
+      // 对用户来说是同一件事，顶部的任务胶囊和历史页的新行入场都该照常发生。
+      // 直接调 engine 会绕开 currentStage 与 wallpaperAppliedTick。
       if (engine.isBusy) return;
-      final result = await engine.changeWallpaper();
-      lastAutoResult = result;
-      notifyListeners();
+      lastAutoResult = await changeWallpaper();
     });
   }
 
+  /// 最近一次自动换壁纸的结果。
+  ///
+  /// 自动换壁纸发生在用户可能正在看别处的时候，失败要能事后查到；
+  /// 成功则不打扰（壁纸自己变了就是反馈）。
   ChangeResult? lastAutoResult;
 
   void _onSettingsChanged() {
