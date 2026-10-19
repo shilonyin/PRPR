@@ -196,6 +196,11 @@ class _PostGridState extends State<PostGrid> {
               ),
             ),
             // 翻页进度固定在视口底部，不参与布局，列表不会因此跳动。
+            //
+            // TickerMode 不是可选项：LinearProgressIndicator 是无限动画，
+            // 把它塞进 AnimatedOpacity(0) 之后它照样每帧都在跑 ticker，
+            // 于是「什么都没发生」的界面上 CPU 也降不下来。禁用 ticker 后
+            // 它冻结在当前帧、透明度为 0，不花任何开销；真正出现时再重新跑。
             Positioned(
               left: 0,
               right: 0,
@@ -204,7 +209,10 @@ class _PostGridState extends State<PostGrid> {
                 child: AnimatedOpacity(
                   opacity: widget.isLoadingMore && widget.posts.isNotEmpty ? 1 : 0,
                   duration: AppTheme.durFast,
-                  child: const LinearProgressIndicator(minHeight: 2),
+                  child: TickerMode(
+                    enabled: widget.isLoadingMore && widget.posts.isNotEmpty,
+                    child: const LinearProgressIndicator(minHeight: 2),
+                  ),
                 ),
               ),
             ),

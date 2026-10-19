@@ -178,7 +178,12 @@ class _FavoriteViewState extends State<FavoriteView> {
               opacity: _switchingSort || state.isLoadingFavorites ? 1 : 0,
               duration: AppTheme.durFast,
               curve: AppTheme.curveIn,
-              child: const LinearProgressIndicator(minHeight: 2),
+              // 见 post_grid.dart 里同一处注释：无限动画的 ticker 不会因为
+              // 外层的 AnimatedOpacity 变成 0 就停下，必须显式禁用。
+              child: TickerMode(
+                enabled: _switchingSort || state.isLoadingFavorites,
+                child: const LinearProgressIndicator(minHeight: 2),
+              ),
             ),
           ),
         ),
