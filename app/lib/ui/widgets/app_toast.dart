@@ -14,15 +14,48 @@ import '../theme.dart';
 abstract final class AppToast {
   /// 失败提示。固定宽度 360、浮动：桌面窗口很宽，全宽横条的阅读成本过高。
   static void error(BuildContext context, String message) {
+    _show(context, message, _ToastKind.error);
+  }
+
+  /// 中性提示。只用于「点了某个还没实现的选项」这种需要一句话解释的场合。
+  static void info(BuildContext context, String message) {
+    _show(context, message, _ToastKind.info);
+  }
+
+  static void _show(BuildContext context, String message, _ToastKind kind) {
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
+    final c = AppColor.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            // 用一条 2px 的竖线代替圆形图标：这条提示是「一句话」，
+            // 配一个 16px 的图会让 360 宽的条子里出现两个视觉重心。
+            Container(
+              width: 2,
+              height: 14,
+              decoration: BoxDecoration(
+                color: kind == _ToastKind.error ? c.danger : c.inkFaint,
+                borderRadius: BorderRadius.circular(1),
+              ),
+            ),
+            const SizedBox(width: AppTheme.gapM),
+            Expanded(
+              child: Text(
+                message,
+                style: AppType.body.copyWith(color: c.ink),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: c.surface,
         behavior: SnackBarBehavior.floating,
         width: 360,
-        duration: AppTheme.durTask * 10,
+        duration: kind == _ToastKind.error
+            ? const Duration(seconds: 4)
+            : const Duration(seconds: 3),
       ),
     );
   }
@@ -37,3 +70,5 @@ abstract final class AppToast {
     error(context, message);
   }
 }
+
+enum _ToastKind { error, info }

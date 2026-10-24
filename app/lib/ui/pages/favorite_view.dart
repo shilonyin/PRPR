@@ -5,6 +5,7 @@ import '../../models/post.dart';
 import '../app_state.dart';
 import '../theme.dart';
 import '../widgets/app_route.dart';
+import '../widgets/app_topbar.dart';
 import '../widgets/post_grid.dart';
 import '../widgets/state_message.dart';
 import 'post_detail_page.dart';
@@ -83,36 +84,41 @@ class _FavoriteViewState extends State<FavoriteView> {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final settings = state.settings;
-    final theme = Theme.of(context);
+    final c = AppColor.of(context);
 
     if (!settings.isLoggedIn) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(AppTheme.gapXxl),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.lock_outline,
-                size: AppTheme.iconXl,
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(height: AppTheme.gapM),
-              Text(
-                '登录后才能看到自己的收藏',
-                style: theme.textTheme.bodyMedium,
-              ),
-              const SizedBox(height: AppTheme.gapS),
-              Text(
-                '在「设置 → 账号」里填入站点用户名和密码。',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+      return Column(
+        children: [
+          _topBar(c, count: 0, sortable: false),
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(AppTheme.gapXxl),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.lock_outline,
+                      size: AppTheme.iconXl,
+                      color: c.inkFaint,
+                    ),
+                    const SizedBox(height: AppTheme.gapM),
+                    Text(
+                      '登录后才能看到自己的收藏',
+                      style: AppType.body.copyWith(color: c.ink),
+                    ),
+                    const SizedBox(height: AppTheme.gapS),
+                    Text(
+                      '在「设置 → 账号」里填入站点用户名和密码。',
+                      style: AppType.caption.copyWith(color: c.inkFaint),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
                 ),
-                textAlign: TextAlign.center,
               ),
-            ],
+            ),
           ),
-        ),
+        ],
       );
     }
 
@@ -121,73 +127,111 @@ class _FavoriteViewState extends State<FavoriteView> {
     final firstLoad = state.isLoadingFavorites && state.favoritePosts.isEmpty;
     if (firstLoad) return const SkeletonGrid();
 
-    return Stack(
+    return Column(
       children: [
-        AnimatedOpacity(
-          opacity: _switchingSort || state.isLoadingFavorites ? 0.55 : 1,
-          duration: AppTheme.durFast,
-          curve: AppTheme.curveIn,
-          child: PostGrid(
-            posts: state.favoritePosts,
-            heroPrefix: 'fav-',
-            emptyText: '还没有收藏任何图片',
-            onOpen: _open,
-            header: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '${state.favoritePosts.length} 张收藏',
-                    style: AppTheme.sectionTitle(context),
+        _topBar(
+          c,
+          count: state.favoritePosts.length,
+          sortable: true,
+          refreshing: state.isLoadingFavorites,
+        ),
+        Expanded(
+          child: Stack(
+            children: [
+              AnimatedOpacity(
+                opacity: _switchingSort || state.isLoadingFavorites ? 0.55 : 1,
+                duration: AppTheme.durFast,
+                curve: AppTheme.curveIn,
+                child: PostGrid(
+                  posts: state.favoritePosts,
+                  heroPrefix: 'fav-',
+                  emptyText: '还没有收藏任何图片',
+                  onOpen: _open,
+                ),
+              ),
+              // 重载时在顶部给一条 2px 的进度线：列表变淡说明「在忙」，
+              // 这条线说明「忙的是刷新」而不是「卡住了」。
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 0,
+                child: IgnorePointer(
+                  child: AnimatedOpacity(
+                    opacity: _switchingSort || state.isLoadingFavorites ? 1 : 0,
+                    duration: AppTheme.durFast,
+                    curve: AppTheme.curveIn,
+                    // 见 post_grid.dart 里同一处注释：无限动画的 ticker 不会
+                    // 因为外层的 AnimatedOpacity 变成 0 就停下，必须显式禁用。
+                    child: TickerMode(
+                      enabled: _switchingSort || state.isLoadingFavorites,
+                      child: const LinearProgressIndicator(minHeight: 2),
+                    ),
                   ),
                 ),
-                const SizedBox(width: AppTheme.gapM),
-                DropdownButton<int>(
-                  value: state.favoriteSortIndex,
-                  items: [
-                    for (var i = 0; i < AppState.favoriteSortLabels.length; i++)
-                      DropdownMenuItem<int>(
-                        value: i,
-                        child: Text(AppState.favoriteSortLabels[i]),
-                      ),
-                  ],
-                  onChanged: (value) async {
-                    if (value == null || value == state.favoriteSortIndex) {
-                      return;
-                    }
-                    await _changeSort(value);
-                  },
-                ),
-                const SizedBox(width: AppTheme.gapS),
-                IconButton(
-                  tooltip: '刷新',
-                  onPressed: state.isLoadingFavorites ? null : _load,
-                  icon: const Icon(Icons.refresh, size: AppTheme.iconSm),
-                ),
-              ],
-            ),
-          ),
-        ),
-        // 重载时在顶部给一条 2px 的进度线：列表变淡说明「在忙」，
-        // 这条线说明「忙的是刷新」而不是「卡住了」。
-        Positioned(
-          left: 0,
-          right: 0,
-          top: 0,
-          child: IgnorePointer(
-            child: AnimatedOpacity(
-              opacity: _switchingSort || state.isLoadingFavorites ? 1 : 0,
-              duration: AppTheme.durFast,
-              curve: AppTheme.curveIn,
-              // 见 post_grid.dart 里同一处注释：无限动画的 ticker 不会因为
-              // 外层的 AnimatedOpacity 变成 0 就停下，必须显式禁用。
-              child: TickerMode(
-                enabled: _switchingSort || state.isLoadingFavorites,
-                child: const LinearProgressIndicator(minHeight: 2),
               ),
-            ),
+            ],
           ),
         ),
       ],
+    );
+  }
+
+  /// 顶栏：页名 + 收藏数 + 排序 + 刷新。
+  ///
+  /// 排序在此之前是塞在网格 header 里的 DropdownButton —— 那是全应用唯一
+  /// 一个 Material 下拉，在一排自绘控件里显得像个外来件。收进顶栏后，
+  /// 页面的操作区只有一条，且和搜索页的操作区位置完全一致。
+  Widget _topBar(
+    AppPalette c, {
+    required int count,
+    required bool sortable,
+    bool refreshing = false,
+  }) {
+    final state = context.watch<AppState>();
+    return AppTopBar(
+      child: Row(
+        children: [
+          Text('收藏', style: AppType.section.copyWith(color: c.ink)),
+          const SizedBox(width: AppTheme.gapM),
+          if (sortable) AppTopBarLabel('$count 张'),
+          const Spacer(),
+          if (sortable) ...[
+            DropdownButtonHideUnderline(
+              child: DropdownButton<int>(
+                value: state.favoriteSortIndex,
+                isDense: true,
+                dropdownColor: c.surface,
+                borderRadius: BorderRadius.circular(AppTheme.inputRadius),
+                style: AppType.monoData.copyWith(color: c.inkDim),
+                icon: Icon(
+                  Icons.arrow_drop_down,
+                  size: 15,
+                  color: c.inkFaint,
+                ),
+                items: [
+                  for (var i = 0; i < AppState.favoriteSortLabels.length; i++)
+                    DropdownMenuItem<int>(
+                      value: i,
+                      child: Text(AppState.favoriteSortLabels[i]),
+                    ),
+                ],
+                onChanged: (value) async {
+                  if (value == null || value == state.favoriteSortIndex) {
+                    return;
+                  }
+                  await _changeSort(value);
+                },
+              ),
+            ),
+            const SizedBox(width: AppTheme.gapS),
+            IconButton(
+              tooltip: '刷新',
+              onPressed: refreshing ? null : _load,
+              icon: const Icon(Icons.refresh, size: AppTheme.iconXs),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../theme.dart';
+import 'post_grid.dart';
 
 /// 内容区「没有内容可看」时的统一展示。
 ///
@@ -209,9 +210,15 @@ class StateMessageSwitcher extends StatelessWidget {
 /// 关键约束：**整块只有一个 ticker**。曾经的写法是每张占位卡各转一个无限
 /// 进度圈，一屏 30 张就是 30 个 ticker 同时刷帧，滚动直接掉帧。
 class SkeletonGrid extends StatefulWidget {
-  const SkeletonGrid({super.key, this.tileCount = 18});
+  const SkeletonGrid({super.key, this.tileCount = 18, this.density = 4});
 
   final int tileCount;
+
+  /// 与 [PostGrid.density] 同义：基准 1440 宽下希望看到几列。
+  ///
+  /// 骨架必须用和真内容同一套列宽公式，否则首屏画出 5 列、数据一到变成
+  /// 4 列，整屏图会横跳一次 —— 骨架的意义就是不跳。
+  final int density;
 
   @override
   State<SkeletonGrid> createState() => _SkeletonGridState();
@@ -248,10 +255,10 @@ class _SkeletonGridState extends State<SkeletonGrid>
     final scheme = Theme.of(context).colorScheme;
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = _columnsFor(constraints.maxWidth);
+        final columns = PostGrid.columnsFor(constraints.maxWidth, widget.density);
         final width = (constraints.maxWidth -
                 AppTheme.pagePadding * 2 -
-                AppTheme.gapL * (columns - 1)) /
+                AppTheme.gridGap * (columns - 1)) /
             columns;
         // 往最短的一列里塞下一块，模拟瀑布流的堆叠方式。
         final buckets = List<List<double>>.generate(columns, (_) => <double>[]);
@@ -263,7 +270,7 @@ class _SkeletonGridState extends State<SkeletonGrid>
           }
           final ratio = _ratios[i % _ratios.length];
           buckets[target].add(ratio);
-          heights[target] += width * ratio + AppTheme.gapL;
+          heights[target] += width * ratio + AppTheme.gridGap;
         }
         return SingleChildScrollView(
           physics: const NeverScrollableScrollPhysics(),
@@ -285,20 +292,20 @@ class _SkeletonGridState extends State<SkeletonGrid>
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   for (var c = 0; c < columns; c++) ...[
-                    if (c > 0) const SizedBox(width: AppTheme.gapL),
+                    if (c > 0) const SizedBox(width: AppTheme.gridGap),
                     SizedBox(
                       width: width,
                       child: Column(
                         children: [
                           for (final ratio in buckets[c])
                             Padding(
-                              padding: const EdgeInsets.only(bottom: AppTheme.gapL),
+                              padding: const EdgeInsets.only(bottom: AppTheme.gridGap),
                               child: Container(
                                 height: width * ratio,
                                 decoration: BoxDecoration(
                                   color: color,
                                   borderRadius: BorderRadius.circular(
-                                    AppTheme.cardRadius,
+                                    AppTheme.imageRadius,
                                   ),
                                 ),
                               ),
@@ -314,11 +321,5 @@ class _SkeletonGridState extends State<SkeletonGrid>
         );
       },
     );
-  }
-
-  /// 与 [PostGrid] 同一套列宽算法，骨架与真内容才不会错列。
-  static int _columnsFor(double width) {
-    final available = width - AppTheme.pagePadding * 2;
-    return (available / 260).floor().clamp(2, 8);
   }
 }

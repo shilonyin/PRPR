@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,19 +8,13 @@ import 'package:provider/provider.dart';
 import '../../services/wallpaper_engine.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import '../widgets/app_rail.dart';
 import '../widgets/app_toast.dart';
 import 'favorite_view.dart';
 import 'feature_view.dart';
 import 'history_page.dart';
 import 'search_view.dart';
 import 'settings_page.dart';
-
-/// 侧栏展开宽度与收起宽度。
-///
-/// 收起态 80 是 Material 的 NavigationRail 默认最小宽度，图标能完整放下；
-/// 展开态 236 比默认的 256 窄一点，把省下的宽度留给内容区。
-const double _kRailExtendedWidth = 236;
-const double _kRailCollapsedWidth = 80;
 
 /// Ctrl+1..5 切页。
 class _SelectTabIntent extends Intent {
@@ -28,15 +23,32 @@ class _SelectTabIntent extends Intent {
   final int index;
 }
 
+/// Ctrl+Enter 换壁纸。
+class _ChangeWallpaperIntent extends Intent {
+  const _ChangeWallpaperIntent();
+}
+
+class _RefreshIntent extends Intent {
+  const _RefreshIntent();
+}
+
+class _FocusSearchIntent extends Intent {
+  const _FocusSearchIntent();
+}
+
 /// 主界面骨架。
 ///
-/// 原 UWP `HomePage` 用 `Pivot` 横向切「首页 / 收藏 / 概念」，
-/// 另外用汉堡菜单跳到设置与关于。桌面端换成常驻的 `NavigationRail`：
-/// 没有二级菜单，一眼能看到所有入口，也不用先展开再点。
+/// 上一版是 236px 可折叠文字侧栏 + AppBar 标题。两个问题叠在一起：
 ///
-/// 各 tab 用 `IndexedStack` 保活 —— 搜索到一半切走再切回来，
-/// 列表和滚动位置都还在。保活也意味着切换时必须自己补一个过场，
-/// 否则画面是一帧硬切，像被刷新了。
+/// 1. 侧栏占宽。五个入口的标签常驻 236px，而内容区才是这个应用的全部意义
+///    （看图）。收成 56px 只有图标之后，1320px 正好摆下 4 列 325 的瓦片。
+/// 2. AppBar 把「页面名 + 操作 + 状态」三件事挤在一条 56px 的带子上，
+///    而搜索页真正需要常驻顶栏的是**搜索语法本身**。所以 AppBar 取消，
+///    各页自己画顶栏（见 widgets/app_topbar.dart）：搜索页 79px 内嵌输入、
+///    设置页 56px 只有页名、详情页 56px 是返回箭头和面包屑。
+///
+/// 「换一张壁纸」这个全局动作从顶栏挪到导航轨底部：它在任何页都可用，
+/// 属于应用级动作而不是页面级动作；放顶栏会被每一页的顶栏重新实现一遍。
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
@@ -46,8 +58,20 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage>
     with SingleTickerProviderStateMixin {
-  int _index = 0;
-  bool _railExtended = true;
+  /// 启动时停在哪一页。默认 0 = 搜索页。
+  ///
+  /// 可以用环境变量 PRPR_TAB=0..4 覆盖（构建期 PRPR_TAB dart-define 也行）。
+  /// 加这个是为了截图核对 —— 桌面端没有可靠的自动化点击，靠鼠标屏幕坐标
+  /// 换算去点 rail 每次都被 150% DPI 缩放坑，改成可配置比反复调坐标省事。
+  /// 环境变量优先于 dart-define，这样换一页截图不用重新编译。
+  int _index = _initialIndex();
+
+  static int _initialIndex() {
+    final raw = Platform.environment['PRPR_TAB'];
+    final fromEnv = int.tryParse(raw ?? '');
+    final index = fromEnv ?? const int.fromEnvironment('PRPR_TAB', defaultValue: 0);
+    return index.clamp(0, 4);
+  }
 
   /// 换壁纸的一次性结果。成功后显示 3 秒再收起。
   ChangeResult? _lastResult;
@@ -76,12 +100,12 @@ class _HomePageState extends State<HomePage>
     end: Offset.zero,
   ).animate(CurvedAnimation(parent: _tabController, curve: AppTheme.curveIn));
 
-  static const List<_Destination> _destinations = <_Destination>[
-    _Destination('搜索', Icons.search),
-    _Destination('每日精选', Icons.today_outlined),
-    _Destination('收藏', Icons.favorite_border),
-    _Destination('历史', Icons.history),
-    _Destination('设置', Icons.settings_outlined),
+  static const List<RailDestination> _destinations = <RailDestination>[
+    RailDestination(label: '搜索  Ctrl+1', icon: Icons.search),
+    RailDestination(label: '每日精选  Ctrl+2', icon: Icons.today_outlined),
+    RailDestination(label: '收藏  Ctrl+3', icon: Icons.favorite_border),
+    RailDestination(label: '历史  Ctrl+4', icon: Icons.history),
+    RailDestination(label: '设置  Ctrl+5', icon: Icons.tune),
   ];
 
   @override
@@ -120,7 +144,7 @@ class _HomePageState extends State<HomePage>
       AppToast.error(context, result.message);
       return;
     }
-    // 成功不弹提示：胶囊自己变绿说「已换上新壁纸」，3 秒后收起。
+    // 成功不弹提示：轨底那颗按钮自己变绿说「已换」，3 秒后恢复。
     _resultTimer = Timer(const Duration(seconds: 3), () {
       if (!mounted) return;
       setState(() => _lastResult = null);
@@ -131,7 +155,6 @@ class _HomePageState extends State<HomePage>
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final stage = state.currentStage;
-    final theme = Theme.of(context);
 
     return Shortcuts(
       shortcuts: <ShortcutActivator, Intent>{
@@ -183,129 +206,24 @@ class _HomePageState extends State<HomePage>
           ),
         },
         child: Scaffold(
-          appBar: AppBar(
-            // 页面名当标题，「PRPR」退成左侧小标：以前标题恒为 PRPR，切页毫无反馈，
-            // 页面身份只能靠内容区的段标题补，等于让段标题兼任页面标题。
-            //
-            // 折叠按钮也放在这里，而不是 NavigationRail 的 leading：rail 的 Column
-            // 给 leading 的是松散约束，Align 会收缩到按钮自身宽度再被 Column 居中，
-            // 结果按钮飘在导航图标右侧、看着像第 6 个入口。AppBar 的 leading 有固定
-            // 宽度，位置完全可控。
-            leadingWidth: 132,
-            leading: Padding(
-              padding: const EdgeInsets.only(left: AppTheme.gapS),
-              child: Row(
-                children: [
-                  IconButton(
-                    tooltip: _railExtended ? '收起侧栏' : '展开侧栏',
-                    onPressed: () =>
-                        setState(() => _railExtended = !_railExtended),
-                    // 只转箭头不换图标：换图标是两帧之间的硬切，转 180°
-                    // 能把「侧栏翻过去了」这件事讲完。
-                    icon: AnimatedRotation(
-                      turns: _railExtended ? 0 : 0.5,
-                      duration: AppTheme.durMed,
-                      curve: AppTheme.curveEmph,
-                      child: const Icon(
-                        Icons.keyboard_double_arrow_left,
-                        size: AppTheme.iconSm,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: AppTheme.gapXs),
-                  Flexible(
-                    child: Text(
-                      'PRPR',
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        color: theme.colorScheme.onSurfaceVariant,
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            titleSpacing: 0,
-            // 标题比内容区快 40ms 换掉：标题先动、内容跟上，
-            // 视线先落在标题上再被引到正文，比两者同时动更有层次。
-            title: AnimatedSwitcher(
-              duration: AppTheme.durFast,
-              switchInCurve: AppTheme.curveIn,
-              transitionBuilder: (child, animation) {
-                final offset = Tween<Offset>(
-                  begin: const Offset(0, -0.25),
-                  end: Offset.zero,
-                ).animate(animation);
-                return FadeTransition(
-                  opacity: animation,
-                  child: SlideTransition(position: offset, child: child),
-                );
-              },
-              child: Text(
-                _destinations[_index].label,
-                key: ValueKey<int>(_index),
-              ),
-            ),
-            actions: [
-              Padding(
-                padding: const EdgeInsets.only(right: AppTheme.gapM),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // 任务胶囊、成功提示、换壁纸按钮共用同一行，不占内容区高度。
-                    AnimatedSize(
-                      duration: AppTheme.durMed,
-                      curve: AppTheme.curveEmph,
-                      alignment: Alignment.centerRight,
-                      child: _trailingStatus(stage),
-                    ),
-                    const SizedBox(width: AppTheme.gapM),
-                    FilledButton.icon(
-                      onPressed:
-                          (stage != null || _applying) ? null : _changeNow,
-                      icon: const Icon(
-                        Icons.wallpaper_outlined,
-                        size: AppTheme.iconSm,
-                      ),
-                      label: const Text('换一张壁纸'),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+          // 没有 AppBar，也没有 SafeArea：桌面窗口没有刘海，
+          // 系统标题栏由 runner 自己管。内容从 0,0 开始画。
           body: Row(
             children: [
-              AnimatedContainer(
-                duration: AppTheme.durMed,
-                curve: AppTheme.curveEmph,
-                width: _railExtended ? _kRailExtendedWidth : _kRailCollapsedWidth,
-                // rail 的宽度本身就由 extended 决定，切 extended 会在一帧内
-                // 改变宽度/标签/布局，任何补间都盖不住。所以这里恒为展开态，
-                // 外层裁切来出收起效果。
-                child: ClipRect(
-                  child: OverflowBox(
-                    alignment: Alignment.centerLeft,
-                    minWidth: _kRailExtendedWidth,
-                    maxWidth: _kRailExtendedWidth,
-                    child: NavigationRail(
-                      extended: true,
-                      selectedIndex: _index,
-                      onDestinationSelected: _select,
-                      destinations: [
-                        for (final d in _destinations)
-                          NavigationRailDestination(
-                            icon: Icon(d.icon),
-                            label: Text(d.label),
-                          ),
-                      ],
-                    ),
-                  ),
+              AppRail(
+                destinations: _destinations,
+                selectedIndex: _index,
+                onSelected: _select,
+                trailing: _WallpaperButton(
+                  applying: _applying,
+                  stage: stage,
+                  lastResult: _lastResult,
+                  onTap: _changeNow,
                 ),
               ),
-              const VerticalDivider(width: 1, thickness: 1),
+              // rail 与内容之间只有 1px 分界，不用 VerticalDivider 组件：
+              // 它带 16 的默认边距，会把内容区起点推离 56。
+              Container(width: 1, color: AppColor.of(context).line),
               Expanded(
                 child: FadeTransition(
                   opacity: _tabOpacity,
@@ -330,158 +248,154 @@ class _HomePageState extends State<HomePage>
       ),
     );
   }
-
-  /// AppBar 右侧的状态区：优先级 任务中 > 刚成功 > 空。
-  Widget _trailingStatus(ChangeStage? stage) {
-    if (stage != null) {
-      return _TaskPill(key: const ValueKey<String>('task'), stage: stage);
-    }
-    final result = _lastResult;
-    if (result != null && result.success) {
-      return const _SuccessChip(key: ValueKey<String>('done'));
-    }
-    return const SizedBox.shrink(key: ValueKey<String>('idle'));
-  }
 }
 
-/// Ctrl+Enter 换壁纸。
-class _ChangeWallpaperIntent extends Intent {
-  const _ChangeWallpaperIntent();
-}
-
-class _RefreshIntent extends Intent {
-  const _RefreshIntent();
-}
-
-class _FocusSearchIntent extends Intent {
-  const _FocusSearchIntent();
-}
-
-/// 换壁纸的进度胶囊。
+/// 轨底的应用级动作：换壁纸。
 ///
-/// 以前是标题旁边一个 16px 的圈 + 一行「正在下载」。问题在于「换壁纸」是全应用
-/// 唯一的真·长任务（拉列表 0.3~0.8s、下载 1~3s、检测 0.2~2s），反馈却是最弱的。
-///
-/// 现在换成**分段**进度而不是百分比：各阶段耗时完全不可知，一条按时间推进的
-/// 进度条会在 90% 停十几秒，比不显示更让人焦虑；分段只表达「走到第几步了」。
-class _TaskPill extends StatelessWidget {
-  const _TaskPill({super.key, required this.stage});
+/// 三种状态共用一个 40x40 的位置：空闲是金色描边图标，进行中是分段进度环，
+/// 刚成功是绿色勾。位置固定、只换内容，用户第二次点的时候手不用重新找。
+class _WallpaperButton extends StatelessWidget {
+  const _WallpaperButton({
+    required this.applying,
+    required this.stage,
+    required this.lastResult,
+    required this.onTap,
+  });
 
-  final ChangeStage stage;
+  final bool applying;
+  final ChangeStage? stage;
+  final ChangeResult? lastResult;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final current = stage.index;
-    final total = ChangeStage.values.length;
+    final c = AppColor.of(context);
+    final busy = stage != null || applying;
+    final done = !busy && lastResult?.success == true;
 
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppTheme.gapM,
-        vertical: AppTheme.gapS,
-      ),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(AppTheme.chipRadius),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (var i = 0; i < total; i++) ...[
-            if (i > 0) const SizedBox(width: 3),
-            AnimatedContainer(
-              duration: AppTheme.durFast,
-              curve: AppTheme.curveIn,
-              width: 3,
-              height: 14,
-              decoration: BoxDecoration(
-                color: i < current
-                    ? scheme.primary
-                    : i == current
-                        ? scheme.primary.withValues(alpha: 0.45)
-                        : scheme.outlineVariant,
-                borderRadius: BorderRadius.circular(1.5),
-              ),
-            ),
-          ],
-          const SizedBox(width: AppTheme.gapM),
-          AnimatedSwitcher(
-            duration: AppTheme.durFast,
-            switchInCurve: AppTheme.curveIn,
-            transitionBuilder: (child, animation) {
-              final offset = Tween<Offset>(
-                begin: const Offset(0, 0.12),
-                end: Offset.zero,
-              ).animate(animation);
-              return FadeTransition(
-                opacity: animation,
-                child: SlideTransition(position: offset, child: child),
-              );
-            },
-            child: Text(
-              stage.label,
-              key: ValueKey<ChangeStage>(stage),
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
+    return Tooltip(
+      message: busy
+          ? (stage?.label ?? '换壁纸中')
+          : (done ? '已换上新壁纸' : '换一张壁纸  Ctrl+Enter'),
+      waitDuration: const Duration(milliseconds: 420),
+      preferBelow: false,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: AppTheme.gapS),
+        child: MouseRegion(
+          cursor: busy ? SystemMouseCursors.basic : SystemMouseCursors.click,
+          child: GestureDetector(
+            onTap: busy ? null : onTap,
+            behavior: HitTestBehavior.opaque,
+            child: SizedBox(
+              width: AppTheme.railWidth,
+              height: AppTheme.railItemSize + 8,
+              child: Center(
+                child: AnimatedContainer(
+                  duration: AppTheme.durFast,
+                  width: AppTheme.railItemSize,
+                  height: AppTheme.railItemSize,
+                  decoration: BoxDecoration(
+                    color: done
+                        ? c.safe.withValues(alpha: 0.16)
+                        : c.gold.withValues(alpha: busy ? 0.10 : 0.14),
+                    borderRadius:
+                        BorderRadius.circular(AppTheme.railItemRadius),
+                  ),
+                  child: Center(
+                    child: busy
+                        ? _StageRing(stage: stage, applying: applying)
+                        : Icon(
+                            done
+                                ? Icons.check_rounded
+                                : Icons.wallpaper_outlined,
+                            size: AppTheme.iconSm,
+                            color: done ? c.safe : c.gold,
+                          ),
+                  ),
+                ),
               ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }
 }
 
-/// 换壁纸成功后的提示。
+/// 换壁纸的分段进度环。
 ///
-/// 少数几个允许回弹的地方之一：`easeOutBack` 会冲到约 1.1 倍再落回 1.0，
-/// 「弹出来」的分量刚好和「成了」这件事匹配，又只持续 320ms。
-class _SuccessChip extends StatelessWidget {
-  const _SuccessChip({super.key});
+/// 用环而不是百分比：各阶段耗时完全不可知（拉列表 0.3~0.8s、下载 1~3s、
+/// 检测 0.2~2s），按时间推进的百分比会在 90% 停十几秒，比不显示更焦虑。
+/// 环上按阶段分 5 段，只表示「走到第几步」。
+class _StageRing extends StatelessWidget {
+  const _StageRing({required this.stage, required this.applying});
 
-  static const Color _green = Color(0xFF2E7D32);
+  final ChangeStage? stage;
+  final bool applying;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(begin: 0.9, end: 1),
-      duration: const Duration(milliseconds: 320),
-      curve: Curves.easeOutBack,
-      builder: (context, value, child) =>
-          Transform.scale(scale: value, child: child),
-      child: Container(
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppTheme.gapM,
-          vertical: AppTheme.gapS,
+    final c = AppColor.of(context);
+    final total = ChangeStage.values.length;
+    final done = stage == null ? 0 : stage!.index;
+
+    return SizedBox(
+      width: 22,
+      height: 22,
+      child: CustomPaint(
+        painter: _RingPainter(
+          total: total,
+          done: done,
+          color: c.gold,
+          track: c.line,
         ),
-        decoration: BoxDecoration(
-          color: _green.withValues(alpha: 0.14),
-          borderRadius: BorderRadius.circular(AppTheme.chipRadius),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.check_circle, size: AppTheme.iconXs, color: _green),
-            const SizedBox(width: AppTheme.gapXs),
-            Text(
-              '已换上新壁纸',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: _green,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
+        child: Center(
+          child: applying && stage == null
+              ? SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.6,
+                    color: c.gold,
+                  ),
+                )
+              : Icon(Icons.wallpaper_outlined, size: 11, color: c.gold),
         ),
       ),
     );
   }
 }
 
-class _Destination {
-  const _Destination(this.label, this.icon);
+class _RingPainter extends CustomPainter {
+  _RingPainter({
+    required this.total,
+    required this.done,
+    required this.color,
+    required this.track,
+  });
 
-  final String label;
-  final IconData icon;
+  final int total;
+  final int done;
+  final Color color;
+  final Color track;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromLTWH(1, 1, size.width - 2, size.height - 2);
+    const gap = 0.16;
+    final sweep = (6.28318 - gap * total) / total;
+    final base = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < total; i++) {
+      final start = -1.5708 + i * (sweep + gap);
+      base.color = i <= done ? color : track;
+      canvas.drawArc(rect, start, sweep, false, base);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _RingPainter old) =>
+      old.done != done || old.total != total || old.color != color;
 }

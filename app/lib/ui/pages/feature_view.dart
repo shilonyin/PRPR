@@ -9,6 +9,8 @@ import '../app_state.dart';
 import '../theme.dart';
 import '../widgets/app_route.dart';
 import '../widgets/post_tile.dart';
+import '../widgets/app_topbar.dart';
+import '../widgets/section_header.dart';
 import '../widgets/state_message.dart';
 import 'post_detail_page.dart';
 
@@ -172,52 +174,65 @@ class _FeatureViewState extends State<FeatureView> {
       );
     }
 
-    return RefreshIndicator(
-      onRefresh: _load,
-      child: ListView(
-        padding: const EdgeInsets.all(AppTheme.pagePadding),
-        children: [
-          Row(
+    final c = AppColor.of(context);
+    return Column(
+      children: [
+        AppTopBar(
+          child: Row(
             children: [
-              AppTheme.sectionAccent(context),
-              Expanded(
-                child: Text('今日高分', style: AppTheme.sectionTitle(context)),
-              ),
+              Text('每日精选', style: AppType.section.copyWith(color: c.ink)),
+              const SizedBox(width: AppTheme.gapM),
+              AppTopBarLabel('TOP ${feature.topToday.length}'),
+              const Spacer(),
               TextButton.icon(
                 onPressed: _load,
-                icon: const Icon(Icons.refresh, size: AppTheme.iconSm),
+                icon: const Icon(Icons.refresh, size: AppTheme.iconXs),
                 label: const Text('刷新'),
               ),
             ],
           ),
-          const SizedBox(height: AppTheme.gapS),
-          _TopStrip(
-            posts: feature.topToday,
-            height: _topStripHeight,
-            cardWidth: _topCardWidth,
-            onOpen: _open,
-          ),
-          const SizedBox(height: AppTheme.gapXl),
-          Row(
-            children: [
-              AppTheme.sectionAccent(context),
-              Text('值得一看的标签', style: AppTheme.sectionTitle(context)),
-            ],
-          ),
-          const SizedBox(height: AppTheme.gapM),
-          if (feature.featuredTags.isEmpty)
-            Text('今天没有出现两次以上的标签', style: AppTheme.hint(context))
-          else
-            Wrap(
-              spacing: AppTheme.gapM,
-              runSpacing: AppTheme.gapM,
+        ),
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(
+                AppTheme.pagePadding,
+                AppTheme.gapXl,
+                AppTheme.pagePadding,
+                48,
+              ),
               children: [
-                for (final tag in feature.featuredTags)
-                  _TagCard(tag: tag, onOpen: _open),
+                const AppSectionHeader('今日高分'),
+                const SizedBox(height: AppTheme.gapS),
+                _TopStrip(
+                  posts: feature.topToday,
+                  height: _topStripHeight,
+                  cardWidth: _topCardWidth,
+                  onOpen: _open,
+                ),
+                const SizedBox(height: AppTheme.gapXl),
+                const AppSectionHeader('值得一看的标签'),
+                const SizedBox(height: AppTheme.gapM),
+                if (feature.featuredTags.isEmpty)
+                  Text(
+                    '今天没有出现两次以上的标签',
+                    style: AppTheme.hint(context),
+                  )
+                else
+                  Wrap(
+                    spacing: AppTheme.gapM,
+                    runSpacing: AppTheme.gapM,
+                    children: [
+                      for (final tag in feature.featuredTags)
+                        _TagCard(tag: tag, onOpen: _open),
+                    ],
+                  ),
               ],
             ),
-        ],
-      ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -338,7 +353,7 @@ class _TopStripState extends State<_TopStrip> {
                       Positioned(
                         left: AppTheme.gapS,
                         top: AppTheme.gapS,
-                        child: _rankBadge(index + 1),
+                        child: _rankBadge(AppColor.of(context), index + 1),
                       ),
                     ],
                   ),
@@ -390,12 +405,10 @@ class _TopStripState extends State<_TopStrip> {
     );
   }
 
-  Widget _rankBadge(int rank) {
-    final color = switch (rank) {
-      1 => const Color(0xFFD4A017),
-      2 => const Color(0xFF9AA0A6),
-      _ => const Color(0xFFB08D57),
-    };
+  /// 名次徽章。前三名用金色，其余用中性描边 —— 只有「今天的第一名」
+  /// 值得一块实底，第四名之后还发彩块就是在制造没有信息量的视觉噪声。
+  Widget _rankBadge(AppPalette c, int rank) {
+    final color = rank <= 3 ? c.gold : c.inkFaint;
     return Container(
       padding: const EdgeInsets.symmetric(
         horizontal: AppTheme.gapS,
@@ -407,11 +420,10 @@ class _TopStripState extends State<_TopStrip> {
       ),
       child: Text(
         'TOP $rank',
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 11,
+        style: AppType.chip.copyWith(
+          color: rank <= 3 ? c.onGold : c.ink,
           fontWeight: FontWeight.w700,
-          height: 1.2,
+          letterSpacing: 0.4,
         ),
       ),
     );
@@ -472,7 +484,7 @@ class _TagCard extends StatelessWidget {
                     const SizedBox(height: AppTheme.gapXs),
                     Text(
                       '${tag.posts.length} 张',
-                      style: AppTheme.hint(context)?.copyWith(
+                      style: AppTheme.hint(context).copyWith(
                         fontFeatures: AppTheme.tabularFigures,
                       ),
                     ),

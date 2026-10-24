@@ -11,13 +11,16 @@ import '../../services/yande_client.dart';
 import '../app_state.dart';
 import '../theme.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/app_topbar.dart';
 import '../widgets/hero_flight.dart';
+import '../widgets/section_header.dart';
 
 /// 图片详情页。对应原 UWP 的 `ImagePage`。
 ///
-/// 原版页面有五栏（图片 / 标签 / 属性 / 操作 / 相关），这里压成两栏：
-/// 左边大图可缩放拖动，右边是资料与操作。桌面端横屏空间足够，
-/// 原版那种上下堆叠反而要一直滚动。
+/// 版式：56px 顶栏（返回 + 编号 + 面包屑 + 翻页）+ 左侧画布 + 右栏固定 440。
+/// 左画布刻意比正文底色更暗（`AppPalette.canvas`），让图片自己浮起来 ——
+/// 之前图区和侧栏同色，中间靠一条 1px 分隔线，看图的时候总觉得
+/// 图片左边压着一块没用的灰。
 class PostDetailPage extends StatefulWidget {
   const PostDetailPage({super.key, required this.post, this.heroPrefix = ''});
 
@@ -43,9 +46,19 @@ class _PostDetailPageState extends State<PostDetailPage> {
   String? _flashKey;
   Timer? _flashTimer;
 
-  /// 收藏成功的回弹计数。每次收藏成功加一，让 [TweenAnimationBuilder] 重播。
+  /// 收藏成功的回弹计数。每次收藏成功加一，让 TweenAnimationBuilder 重播。
   int _favBounce = 0;
 
+  /// 左画布的底色。比 bg 再暗一档，把图片从页面里「托」出来。
+
+  @override
+  void initState() {
+    super.initState();
+    final settings = context.read<AppSettings>();
+    if (settings.isLoggedIn) {
+      _refreshVote();
+    }
+  }
 
   @override
   void dispose() {
@@ -66,15 +79,6 @@ class _PostDetailPageState extends State<PostDetailPage> {
       if (post.urlFor(v).isNotEmpty) return v;
     }
     return PostImageVersion.preview;
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    final settings = context.read<AppSettings>();
-    if (settings.isLoggedIn) {
-      _refreshVote();
-    }
   }
 
   Future<void> _refreshVote() async {
@@ -215,18 +219,67 @@ class _PostDetailPageState extends State<PostDetailPage> {
   }
 
   Widget _buildScaffold() {
+    final c = AppColor.of(context);
     return Scaffold(
-      appBar: AppBar(
-        title: Text('#${post.id}'),
-        // 曾经在 actions 里挂一个 18px 的圈表示「有操作在跑」。但页内每个按钮
-        // 自己就有进度反馈，顶部再转一个只会让人猜「到底是哪个在转」。
-      ),
-      body: Row(
+      backgroundColor: c.bg,
+      body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Expanded(flex: 7, child: _buildImage()),
-          const VerticalDivider(width: 1),
-          Expanded(flex: 4, child: _buildSidebar()),
+          _buildTopBar(c),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(child: _buildImage()),
+                VerticalDivider(width: 1, thickness: 1, color: c.line),
+                SizedBox(width: AppTheme.sideWidth, child: _buildSidebar(c)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTopBar(AppPalette c) {
+    final tags = post.tagList;
+    return AppTopBar(
+      child: Row(
+        children: [
+          AppBackButton(onPressed: () => Navigator.of(context).maybePop()),
+          const SizedBox(width: AppTheme.gapS),
+          Text(
+            'No. ${post.id}',
+            style: AppType.monoData.copyWith(color: c.ink),
+          ),
+          const SizedBox(width: AppTheme.gapL),
+          if (tags.isNotEmpty)
+            Expanded(
+              child: AppBreadcrumb(
+                parts: ['搜索', ...tags.take(2)],
+                onTap: (index) {
+                  final crumbs = ['搜索', ...tags.take(2)];
+                  final part = crumbs[index];
+                  Clipboard.setData(ClipboardData(text: part));
+                  _flash('crumb-$part');
+                },
+              ),
+            )
+          else
+            const Spacer(),
+          if (_flashKey != null && _flashKey!.startsWith('crumb-'))
+            Padding(
+              padding: const EdgeInsets.only(right: AppTheme.gapS),
+              child: Text(
+                '已复制',
+                style: AppType.kicker.copyWith(color: c.safe),
+              ),
+            ),
+          IconButton(
+            tooltip: '关闭（Esc）',
+            onPressed: () => Navigator.of(context).maybePop(),
+            icon: Icon(Icons.close, size: AppTheme.iconSm, color: c.inkDim),
+          ),
         ],
       ),
     );
@@ -234,29 +287,32 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   /// 大图区。
   ///
-  /// 这里有三件必须一起做的事：
+  /// 三件必须一起做的事：
   ///
   /// 1. **外框必须是紧约束**。Hero 的起终点矩形取自 Hero 自己的 render box，
-  ///    以前 Hero 外面套着 `Center`，详情页这边拿到的是整块可用区域，瓦片那边
-  ///    拿到的是卡片，两端比例不同，飞行途中图会被拉伸。现在 Hero 只包住
-  ///    按原图比例算出的那个框，和瓦片一致。
-  /// 2. **底层先放预览图**。预览图在列表里早就下好了，进页面立刻有东西看；
-  ///    用户选的画质（常常是几 MB 的原图）解码要几百毫秒，让它自己淡入接住。
-  /// 3. **换画质用淡入**。硬切会让整块图闪白一下，看起来像加载失败。
+  ///    以前 Hero 外面套着 `Center`，详情页这边拿到的是整块可用区域，两端
+  ///    比例不同，飞行途中图会被拉伸。现在 Hero 只包住按原图比例算出的那个框。
+  /// 2. **底层先放预览图**，用户选的画质解码要几百毫秒，让它自己淡入接住。
+  /// 3. **换画质用淡入**，硬切会让整块图闪白一下，看起来像加载失败。
   Widget _buildImage() {
+    final c = AppColor.of(context);
     final url = post.urlFor(_version);
     if (url.isEmpty) {
-      return const Center(child: Text('该图片没有可显示的版本'));
+      return Center(
+        child: Text(
+          '该图片没有可显示的版本',
+          style: AppType.caption.copyWith(color: AppColor.of(context).inkFaint),
+        ),
+      );
     }
-    final scheme = Theme.of(context).colorScheme;
     final previewUrl = post.urlFor(PostImageVersion.preview);
     // 极端长图按原比例铺开会把两侧留成大片空白，限一下。
     final ratio = post.preferredRatio.clamp(0.2, 5.0);
 
     return ColoredBox(
-      color: scheme.surfaceContainerLowest,
+      color: c.canvas,
       child: Padding(
-        padding: const EdgeInsets.all(AppTheme.gapL),
+        padding: const EdgeInsets.all(AppTheme.gapXxl),
         child: Center(
           child: AspectRatio(
             aspectRatio: ratio,
@@ -278,7 +334,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                 previewUrl.isEmpty ? url : previewUrl,
               ),
               child: ClipRRect(
-                borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+                borderRadius: BorderRadius.circular(AppTheme.imageRadius),
                 child: InteractiveViewer(
                   minScale: 0.5,
                   maxScale: 6,
@@ -292,7 +348,7 @@ class _PostDetailPageState extends State<PostDetailPage> {
                           fit: BoxFit.cover,
                           fadeInDuration: AppTheme.durFast,
                           errorWidget: (context, _, _) =>
-                              ColoredBox(color: scheme.surfaceContainerHighest),
+                              ColoredBox(color: c.surface),
                         ),
                       AnimatedSwitcher(
                         duration: AppTheme.durSlow,
@@ -306,12 +362,13 @@ class _PostDetailPageState extends State<PostDetailPage> {
                           fadeInDuration: AppTheme.durMed,
                           fadeInCurve: AppTheme.curveIn,
                           // 底层已有预览图，这里不再转圈，否则圈会盖在图上。
-                          placeholder: (context, _) =>
-                              const SizedBox.shrink(),
+                          placeholder: (context, _) => const SizedBox.shrink(),
                           errorWidget: (context, _, _) => Center(
                             child: Text(
                               '图片加载失败',
-                              style: TextStyle(color: scheme.onSurfaceVariant),
+                              style: AppType.caption.copyWith(
+                                color: c.inkDim,
+                              ),
                             ),
                           ),
                         ),
@@ -327,168 +384,285 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
-  Widget _buildSidebar() {
+  Widget _buildSidebar(AppPalette c) {
     return ListView(
-      padding: const EdgeInsets.all(AppTheme.pagePadding),
+      padding: const EdgeInsets.fromLTRB(28, 26, 28, 40),
       children: [
-        _versionPicker(),
+        Text(
+          'MOEBOORU · POST',
+          style: AppType.kicker.copyWith(color: c.gold),
+        ),
+        const SizedBox(height: AppTheme.gapS),
+        // 标题用等宽字体：图站的作品名本身就是下划线连起来的一串，
+        // 等宽下每个下划线位置对齐，比比例字体好扫。
+        SelectableText(
+          post.tagList.isEmpty ? 'No. ${post.id}' : post.tagList.first,
+          style: AppType.title.copyWith(color: c.ink),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          '${post.author.isEmpty ? '匿名' : post.author} · ${_formatDate(post.createdAtUtc)}',
+          style: AppType.monoData.copyWith(color: c.inkFaint),
+        ),
+        const SizedBox(height: AppTheme.gapXl),
+        _versionSegments(c),
         const SizedBox(height: AppTheme.gapL),
-        _actionRow(),
-        const SizedBox(height: AppTheme.gapL),
-        _voteRow(),
-        const Divider(height: 32),
-        _infoSection(),
-        const Divider(height: 32),
-        _tagSection(),
+        _applyButton(c),
+        const SizedBox(height: AppTheme.gapS),
+        Row(
+          children: [
+            Expanded(child: _favoriteButton()),
+            const SizedBox(width: AppTheme.gapS),
+            Expanded(child: _copyButton()),
+          ],
+        ),
+        const SizedBox(height: AppTheme.gapXl),
+        _voteSection(c),
+        const SizedBox(height: AppTheme.gapXl),
+        const AppSectionHeader('资料'),
+        const SizedBox(height: AppTheme.gapS),
+        _infoTable(c),
+        const SizedBox(height: AppTheme.gapXl),
+        AppSectionHeader(
+          '标签',
+          trailing: Text(
+            '${post.tagList.length}',
+            style: AppType.monoData.copyWith(color: c.inkFaint),
+          ),
+        ),
+        const SizedBox(height: AppTheme.gapS),
+        _tagWrap(c),
+        const SizedBox(height: AppTheme.gapM),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: () async {
+              final host = context.read<AppState>().client.host;
+              final url = post.detailUrl(host);
+              await Clipboard.setData(ClipboardData(text: url));
+              _flash('detail-url');
+            },
+            icon: Icon(
+              _flashKey == 'detail-url' ? Icons.check : Icons.open_in_new,
+              size: AppTheme.iconXs,
+            ),
+            label: const Text('复制站点详情页地址'),
+          ),
+        ),
       ],
     );
   }
 
-  Widget _versionPicker() {
-    final versions = <(PostImageVersion, String)>[
+  /// 画质切换做成分段控件：四个标签等宽排开，选中的那块底色是 surface，
+  /// 文字转金色。用 ChoiceChip 时每个 chip 宽度跟着字走，四个并排起来
+  /// 像四个互不相干的按钮，而不是「同一件事的四个选项」。
+  Widget _versionSegments(AppPalette c) {
+    const versions = <(PostImageVersion, String)>[
       (PostImageVersion.source, '原图'),
       (PostImageVersion.jpeg, 'JPEG'),
       (PostImageVersion.sample, '大图'),
       (PostImageVersion.preview, '预览'),
     ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            AppTheme.sectionAccent(context),
-            Text('画质', style: AppTheme.sectionTitle(context)),
-          ],
-        ),
-        const SizedBox(height: AppTheme.gapS),
-        Wrap(
-          spacing: AppTheme.gapS,
-          children: versions.map((entry) {
-            final (version, label) = entry;
-            final available = post.urlFor(version).isNotEmpty;
-            return ChoiceChip(
-              label: Text(label),
-              selected: _version == version,
-              onSelected: available
-                  ? (_) => setState(() => _version = version)
-                  : null,
-            );
-          }).toList(growable: false),
-        ),
-      ],
-    );
-  }
-
-  Widget _actionRow() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            AppTheme.sectionAccent(context),
-            Text('操作', style: AppTheme.sectionTitle(context)),
-          ],
-        ),
-        const SizedBox(height: AppTheme.gapS),
-        // 只换左侧图标、不换文案：文案一变按钮就跳宽，鼠标还没来得及抬起来
-        // 目标已经移走了。12px 的环足够表示「在跑」，也足够小到不挤动布局。
-        FilledButton.icon(
-          onPressed: _busy ? null : _applyAsWallpaper,
-          icon: _applying
-              ? const SizedBox(
-                  width: 12,
-                  height: 12,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.wallpaper_outlined),
-          label: const Text('设为壁纸'),
-        ),
-        const SizedBox(height: AppTheme.gapS),
-        Wrap(
-          spacing: AppTheme.gapS,
-          runSpacing: AppTheme.gapS,
-          children: [
-            OutlinedButton.icon(
-              onPressed: _busy ? null : _toggleFavorite,
-              // 收藏是用户主动、有明确结果的动作，值得被确认一次：图标先回弹
-              // 一下，再落成实心或空心。
-              icon: TweenAnimationBuilder<double>(
-                key: ValueKey<int>(_favBounce),
-                // easeOutBack 会过冲到 1.1 左右再回落到 1.0，这就是那次「心跳」。
-                tween: Tween<double>(begin: 0.7, end: 1.0),
-                curve: Curves.easeOutBack,
-                duration: _favBounce == 0
-                    ? Duration.zero
-                    : const Duration(milliseconds: 260),
-                builder: (context, value, child) => Transform.scale(
-                  // 0.7 → 1.0 的 easeOutBack：先被压小再弹回并略微过冲。
-                  scale: _favBounce == 0 ? 1 : value,
-                  child: child,
-                ),
-                child: Icon(
-                  _flashKey == 'fav'
-                      ? Icons.check
-                      : _currentVote == VoteType.favorite
-                          ? Icons.favorite
-                          : Icons.favorite_border,
-                ),
+    return Container(
+      height: 30,
+      decoration: BoxDecoration(
+        color: c.panel,
+        border: Border.all(color: c.line),
+        borderRadius: BorderRadius.circular(AppTheme.buttonRadius),
+      ),
+      child: Row(
+        children: [
+          for (final (version, label) in versions)
+            Expanded(
+              child: _segment(
+                c,
+                label: label,
+                selected: _version == version,
+                enabled: post.urlFor(version).isNotEmpty,
+                onTap: () => setState(() => _version = version),
               ),
-              label: Text(_currentVote == VoteType.favorite ? '已收藏' : '收藏'),
             ),
-            OutlinedButton.icon(
-              onPressed: _copyLink,
-              // 复制成功把图标换成对勾：结果就落在用户点的地方，不用去追一条
-              // 从底下飘过去的提示。
-              icon: Icon(_flashKey == 'link' ? Icons.check : Icons.link),
-              label: const Text('复制图片地址'),
-            ),
-          ],
-        ),
-      ],
+        ],
+      ),
     );
   }
 
-  Widget _voteRow() {
-    final scheme = Theme.of(context).colorScheme;
+  Widget _segment(
+    AppPalette c, {
+    required String label,
+    required bool selected,
+    required bool enabled,
+    required VoidCallback onTap,
+  }) {
+    final color = !enabled
+        ? c.inkFaint.withValues(alpha: 0.5)
+        : selected
+            ? c.gold
+            : c.inkDim;
+    return InkWell(
+      onTap: enabled ? onTap : null,
+      borderRadius: BorderRadius.circular(AppTheme.buttonRadius - 2),
+      child: Container(
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? c.surface : Colors.transparent,
+          borderRadius: BorderRadius.circular(AppTheme.buttonRadius - 2),
+        ),
+        child: Text(
+          label,
+          style: AppType.chip.copyWith(color: color),
+        ),
+      ),
+    );
+  }
+
+  /// 主操作占满整行。这是这个页面唯一的高饱和色块 ——
+  /// 用户进来是想把图设成壁纸，其他动作都应该排在它后面。
+  Widget _applyButton(AppPalette c) {
+    return SizedBox(
+      height: 42,
+      child: FilledButton.icon(
+        onPressed: _busy ? null : _applyAsWallpaper,
+        // 只换左侧图标、不换文案：文案一变按钮就跳宽，鼠标还没来得及抬起来
+        // 目标已经移走了。
+        icon: _applying
+            ? const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.wallpaper_outlined, size: AppTheme.iconSm),
+        label: Text(
+          _applying ? '正在设置…' : '设为壁纸',
+          style: AppType.body.copyWith(
+            color: c.onGold,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _favoriteButton() {
+    return SizedBox(
+      height: 38,
+      child: OutlinedButton.icon(
+        onPressed: _busy ? null : _toggleFavorite,
+        // 收藏是用户主动、有明确结果的动作，值得被确认一次：图标先回弹
+        // 一下，再落成实心或空心。easeOutBack 会过冲到 1.1 左右再回落到 1.0。
+        icon: TweenAnimationBuilder<double>(
+          key: ValueKey<int>(_favBounce),
+          tween: Tween<double>(begin: 0.7, end: 1.0),
+          curve: Curves.easeOutBack,
+          duration: _favBounce == 0
+              ? Duration.zero
+              : const Duration(milliseconds: 260),
+          builder: (context, value, child) => Transform.scale(
+            scale: _favBounce == 0 ? 1 : value,
+            child: child,
+          ),
+          child: Icon(
+            _flashKey == 'fav'
+                ? Icons.check
+                : _currentVote == VoteType.favorite
+                    ? Icons.favorite
+                    : Icons.favorite_border,
+            size: AppTheme.iconXs,
+          ),
+        ),
+        label: Text(_currentVote == VoteType.favorite ? '已收藏' : '收藏'),
+      ),
+    );
+  }
+
+  Widget _copyButton() {
+    return SizedBox(
+      height: 38,
+      child: OutlinedButton.icon(
+        onPressed: _copyLink,
+        // 复制成功把图标换成对勾：结果就落在用户点的地方。
+        icon: Icon(
+          _flashKey == 'link' ? Icons.check : Icons.link,
+          size: AppTheme.iconXs,
+        ),
+        label: const Text('复制地址'),
+      ),
+    );
+  }
+
+  Widget _voteSection(AppPalette c) {
+    // 四个评分等分一行。分数用等宽字：一串分数竖排下来时，
+    // 比例字体会让每位数字的宽度都不一样。
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            AppTheme.sectionAccent(context),
-            Text('评分', style: AppTheme.sectionTitle(context)),
-          ],
+        AppSectionHeader(
+          '评分',
+          trailing: Text(
+            post.score.isEmpty ? '—' : post.score,
+            style: AppType.monoData.copyWith(
+              color: c.gold,
+              fontFeatures: AppTheme.tabularFigures,
+            ),
+          ),
         ),
         const SizedBox(height: AppTheme.gapS),
-        Wrap(
-          spacing: AppTheme.gapS,
+        Row(
           children: [
             for (final v in const [
               VoteType.great,
               VoteType.good,
               VoteType.none,
               VoteType.bad,
-            ])
-              ChoiceChip(
-                // 评分组带赞 / 踩图标，和上面同构的画质组区分开。
-                label: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      _flashKey == 'vote-${v.name}' ? Icons.check : _voteIcon(v),
-                      size: AppTheme.iconXs,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: AppTheme.gapXs),
-                    Text(v.label),
-                  ],
-                ),
-                selected: _currentVote == v,
-                onSelected: _busy ? null : (_) => _vote(v),
+            ]) ...[
+              Expanded(
+                child: _voteButton(c, v),
               ),
+              if (v != VoteType.bad) const SizedBox(width: 6),
+            ],
           ],
         ),
       ],
+    );
+  }
+
+  Widget _voteButton(AppPalette c, VoteType v) {
+    final selected = _currentVote == v;
+    final flashed = _flashKey == 'vote-${v.name}';
+    final color = selected ? c.gold : c.inkDim;
+    return Tooltip(
+      message: v.label,
+      waitDuration: const Duration(milliseconds: 500),
+      child: InkWell(
+        onTap: _busy ? null : () => _vote(v),
+        borderRadius: BorderRadius.circular(AppTheme.buttonRadius),
+        child: Container(
+          height: 34,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? c.surface : Colors.transparent,
+            border: Border.all(
+              color: selected ? c.gold.withValues(alpha: 0.4) : c.line,
+            ),
+            borderRadius: BorderRadius.circular(AppTheme.buttonRadius),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                flashed ? Icons.check : _voteIcon(v),
+                size: AppTheme.iconXs,
+                color: flashed ? c.safe : color,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                v.label,
+                style: AppType.chip.copyWith(color: color),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -499,10 +673,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
         _ => Icons.thumb_up_off_alt_outlined,
       };
 
-  /// 资料区里这三行的值是数字，用等宽字体 + 等宽数字对齐。
+  /// 资料区里这几行的值是数字，用等宽字体 + 等宽数字对齐。
   static const Set<String> _monoValueLabels = {'尺寸', '体积', 'MD5'};
 
-  Widget _infoSection() {
+  Widget _infoTable(AppPalette c) {
     final rows = <(String, String)>[
       ('作者', post.author.isEmpty ? '未知' : post.author),
       ('分级', _ratingLabel(post.rating)),
@@ -514,35 +688,35 @@ class _PostDetailPageState extends State<PostDetailPage> {
       ('MD5', post.md5),
     ];
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            AppTheme.sectionAccent(context),
-            Text('资料', style: AppTheme.sectionTitle(context)),
-          ],
-        ),
-        const SizedBox(height: AppTheme.gapS),
         for (final (label, value) in rows)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 7),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: c.line.withValues(alpha: 0.6)),
+              ),
+            ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 SizedBox(
                   width: AppTheme.labelColumnDetail,
-                  child: Text(label, style: AppTheme.hint(context)),
+                  child: Text(
+                    label,
+                    style: AppType.caption.copyWith(color: c.inkFaint),
+                  ),
                 ),
                 Expanded(
                   child: SelectableText(
                     value,
                     style: _monoValueLabels.contains(label)
-                        ? const TextStyle(
-                            fontFamily: 'Consolas',
-                            fontSize: 13,
+                        ? AppType.monoData.copyWith(
+                            color: c.ink,
                             fontFeatures: AppTheme.tabularFigures,
                           )
-                        : null,
+                        : AppType.body.copyWith(color: c.ink),
                   ),
                 ),
               ],
@@ -552,48 +726,39 @@ class _PostDetailPageState extends State<PostDetailPage> {
     );
   }
 
-  Widget _tagSection() {
-    final host = context.read<AppState>().client.host;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _tagWrap(AppPalette c) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
       children: [
-        Row(
-          children: [
-            AppTheme.sectionAccent(context),
-            Text('标签', style: AppTheme.sectionTitle(context)),
-          ],
-        ),
-        const SizedBox(height: AppTheme.gapS),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            for (final tag in post.tagList)
-              ActionChip(
-                avatar: _flashKey == 'tag-$tag'
-                    ? const Icon(Icons.check, size: AppTheme.iconXs)
-                    : null,
-                label: Text(tag),
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: tag));
-                  _flash('tag-$tag');
-                },
-              ),
-          ],
-        ),
-        const SizedBox(height: AppTheme.gapM),
-        TextButton.icon(
-          onPressed: () async {
-            final url = post.detailUrl(host);
-            await Clipboard.setData(ClipboardData(text: url));
-            _flash('detail-url');
-          },
-          icon: Icon(
-            _flashKey == 'detail-url' ? Icons.check : Icons.open_in_new,
-          ),
-          label: const Text('复制站点详情页地址'),
-        ),
+        for (final tag in post.tagList)
+          _tagChip(c, tag),
       ],
+    );
+  }
+
+  Widget _tagChip(AppPalette c, String tag) {
+    final flashed = _flashKey == 'tag-$tag';
+    return InkWell(
+      onTap: () {
+        Clipboard.setData(ClipboardData(text: tag));
+        _flash('tag-$tag');
+      },
+      borderRadius: BorderRadius.circular(AppTheme.chipRadius),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: flashed ? c.safe.withValues(alpha: 0.12) : c.surface,
+          borderRadius: BorderRadius.circular(AppTheme.chipRadius),
+          border: Border.all(
+            color: flashed ? c.safe.withValues(alpha: 0.4) : c.line,
+          ),
+        ),
+        child: Text(
+          tag,
+          style: AppType.chip.copyWith(color: flashed ? c.safe : c.inkDim),
+        ),
+      ),
     );
   }
 

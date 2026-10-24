@@ -19,9 +19,11 @@ Widget heroFlightShuttle(
   BuildContext toContext,
   String imageUrl,
 ) {
-  final t = AppTheme.curveEmph.transform(animation.value);
+  // 飞行起点（瓦片）和终点（详情大图）现在都是 imageRadius，
+  // 沿途保持不变才是一条连续的曲线；以前从 cardRadius 往 0.4 倍收缩，
+  // 是因为两端本来是 12 和 0，现在两端同值，插值反而会让角在中途跳一下。
   return ClipRRect(
-    borderRadius: BorderRadius.circular(AppTheme.cardRadius * (1 - t * 0.6)),
+    borderRadius: BorderRadius.circular(AppTheme.imageRadius),
     child: CachedNetworkImage(
       imageUrl: imageUrl,
       fit: BoxFit.cover,

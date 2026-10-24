@@ -30,26 +30,43 @@ powershell -ExecutionPolicy Bypass -File tool\install.ps1
 
 ## 界面
 
-搜索页。搜索框固定在顶部，滚动瀑布流时不会跟着滚走；瓦片悬停会描边并显示原图尺寸和分级。
+界面按「暗色标本室」重做过一轮：近黑底、单一金色强调、等宽字体承担全部数字与标签语法。
+完整的设计推导、token 表与落地记录在 [`docs/ui-redesign.md`](../docs/ui-redesign.md)。
 
-![搜索页](../docs/screenshots/search.png)
+五张主页面共用一条 56px 的纯图标导航轨（没有文字，当前项左侧一条金线），
+「换一张壁纸」这个全局动作放在轨底 —— 它在任何页都可用，属于应用级动作而不是页面级动作。
+全局 AppBar 已取消：各页自己画顶栏，因为搜索页真正需要常驻顶栏的是**搜索语法本身**。
 
-设置页。所有输入项统一成「左侧标签 + 右侧控件」一列，每段一张卡片，整页限宽 880。
+搜索页。顶栏里嵌着无边框的等宽查询（金色光标 + 一行语法提示），滚动瀑布流时不跟着滚走。
+列数由窗口宽度现算，密度按钮只决定单张图的目标宽度 —— 4K 屏拉宽会自然变成 6–7 列，
+而不是把 4 张图各撑到 600px。瓦片左上角 6px 圆点是分级（绿 safe / 金 questionable / 红 explicit）。
 
-![设置页](../docs/screenshots/settings.png)
+![搜索页](../docs/screenshots/redesign/01-search.png)
 
-帖子详情。左侧大图、右侧画质 / 操作 / 评分 / 资料 / 标签五段。
+帖子详情。顶栏是返回箭头 + `No. 1271220` + 面包屑；左侧深色画布居中放图，
+右侧固定 440px：kicker、标题、画质四段、全宽金色「设为壁纸」、收藏/复制、评分四档、
+资料六行、标签 chips。
 
-![详情页](../docs/screenshots/detail.png)
+![详情页](../docs/screenshots/redesign/02-detail.png)
 
-连不上站点时的错误页。失败原因留在界面上（不只是闪一下的提示条），并给出重试按钮。
+每日精选。TOP 3 横排卡片（金/灰排名徽章）+ 「值得一看的标签」封面墙。
 
-![错误页](../docs/screenshots/offline.png)
+![每日精选](../docs/screenshots/redesign/03-feature.png)
 
-关于页。应用图标是原 UWP 版那只白猫剪影，垫了一层与主题主色一致的圆角底板
-（原图是纯白透明底，不加底板在任务栏上看不见）。
+设置页。左侧 176px 编号导航（`01 站点` … `07 关于`），右侧是无卡片的行式列表，
+每行左标签/说明 + 右侧控件，行间 1px 分隔 —— 不再有「每段一张卡片、整页限宽 880」。
 
-![关于页](../docs/screenshots/about.png)
+![设置页](../docs/screenshots/redesign/06-settings.png)
+
+关于页。应用图标是金色圆角底 + 深色猫脸，与导轨顶部那只 1.4px 金线猫头同源。
+
+![关于页](../docs/screenshots/redesign/08-about-page.png)
+
+收藏页与历史页：
+
+![收藏页](../docs/screenshots/redesign/04-favorite.png)
+
+![历史页](../docs/screenshots/redesign/05-history.png)
 
 ## 交互动效
 
@@ -69,18 +86,19 @@ powershell -ExecutionPolicy Bypass -File tool\install.ps1
 
 几个刻意做成这样的地方：
 
-- **换壁纸的反馈在 AppBar 右侧的「任务胶囊」**：七段分段进度 + 阶段文案，
-  不用百分比（各阶段耗时从 200ms 到 3s 不等，画百分比只会骗人）。
-  成功 morph 成绿色胶囊，3 秒自动收起；失败变可点击重试。
+- **换壁纸的反馈在导航轨底部那个 40×40 的位置上**：三种状态（金色描边图标 /
+  分段进度环 / 绿色勾）共用一个位置，用户第二次点的时候手不用重新找。
+  环按阶段分 5 段而不是画百分比 —— 各阶段耗时从 200ms 到 3s 不等，画百分比只会骗人。
 - **首屏是骨架网格**，并且只有一个 `AnimationController` 驱动全部占位块 ——
-  每张卡各转一个进度圈意味着同屏 30 个 ticker。
+  每张卡各转一个进度圈意味着同屏 30 个 ticker。骨架与真内容共用
+  `PostGrid.columnsFor` 同一套列宽公式，否则首屏画 5 列、数据到了变 4 列会横跳一次。
 - **成功类操作不弹提示条**：设置项在右上角闪「已保存」，复制/收藏/投票把图标临时换成勾，
   只有失败才用 `AppToast.error`，而它会先 `hideCurrentSnackBar`，不会堆叠。
 - **切页不做整页重建**：保留 `IndexedStack`（否则搜索词、滚动位置、焦点全丢），
-  只在外面套一次性淡入 + 8px 上浮，AppBar 标题比主体快 40ms。
-- **侧栏折叠**用 `AnimatedContainer` 控宽 236 ↔ 80，内部 `ClipRect + OverflowBox`
-  把 rail 固定在 236 宽 —— `NavigationRail` 的 `extended` 切换会在一帧内改变宽度和布局，
-  任何补间都盖不住。
+  只在外面套一次性淡入 + 8px 上浮。
+- **侧栏不再折叠**：56px 纯图标轨常驻，比「236 ↔ 80 展开收起」少一次动画、
+  也多出 180px 给图片。`NavigationRail` 的 `extended` 切换会在一帧内改宽度和布局，
+  任何补间都盖不住 —— 干脆不做这个动作。
 
 长时间操作不在 UI isolate 上跑：设置壁纸（win32 FFI + 注册表）和人脸检测（OpenCV 级联）
 都通过 `Isolate.run` 放到后台，否则进度指示器自己就在掉帧。
@@ -178,17 +196,22 @@ lib/
 
 ## 图标
 
-应用图标是原 UWP 版的白猫剪影（`PRPR/Assets/Square44x44Logo.targetsize-256_altform-unplated.png`），
-但那张图是**纯白 + 全透明底**——原版靠系统磁贴底色透出剪影，桌面版没有这层，
-直接拿来当图标在任务栏上就是一片空白。
+图标不用位图拼贴，而是用 Pillow 直接画：金色圆角底（`AppPalette.dark.gold` = `#D8A657`）
+配深色猫脸（`AppPalette.dark.onGold` = `#14110A`），猫脸的路径与导轨顶部
+`ui/widgets/app_rail.dart` 里 `_CatPainter` 用的那条贝塞尔曲线同源——同一只猫，
+只是导轨上是 1.4px 金线，图标里是实心。
 
-所以 `app/tool/make_icon.py` 做了两步：垫一个与主题 seed（`0xFF5B6ABF`）同色的圆角底板，
-再按尺寸分档缩放剪影（16/20/24 用 0.86、32/40 用 0.80、48/64/72 用 0.74、更大用 0.68）——
-小尺寸不放大图案的话，方框和猫脸会糊成一团。
+> 早先的版本沿用 UWP 的白猫剪影（`PRPR/Assets/Square44x44Logo…png`）垫靛蓝底板。
+> 强调色换成金色之后，蓝紫图标与金色标题栏是两套视觉，所以整段重画。
 
-脚本同时产出两样东西：`app/assets/app_logo.png`（512，界面里用）与
-`app/windows/runner/resources/app_icon.ico`（9 个尺寸，exe / 任务栏 / 快捷方式读它）。
-改配色或换图之后重跑一次即可：
+**每个尺寸单独绘制，而不是从 512 缩下来。** 16px 若按大图比例缩放，线条只剩 0.6px，
+LANCZOS 平均后会变成一圈灰边，整只猫糊成方块。所以 `render(size)` 先以 8 倍尺寸画，
+线宽与脸的尺度按档位补偿（≤24px 线更粗、脸更小），再缩回目标尺寸，等于自带超采样。
+耳朵用实心三角而非描边三角——描边三角的根部会和脸留下缝隙，小尺寸下同样糊。
+
+脚本同时产出两样东西：`app/assets/app_logo.png`（512，关于页用）与
+`app/windows/runner/resources/app_icon.ico`（9 个尺寸：16/20/24/32/40/48/64/128/256，
+exe / 任务栏 / 快捷方式读它）。改配色或改形状之后重跑一次即可：
 
 ```
 python app/tool/make_icon.py

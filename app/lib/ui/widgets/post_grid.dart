@@ -29,6 +29,7 @@ class PostGrid extends StatefulWidget {
     this.header,
     this.emptyText = '没有内容',
     this.emptyBuilder,
+    this.density = 4,
   });
 
   final List<Post> posts;
@@ -53,15 +54,58 @@ class PostGrid extends StatefulWidget {
   /// 需要「加载失败 + 重试按钮」这类带交互的空状态时用。
   final WidgetBuilder? emptyBuilder;
 
+  /// 基准密度：1440 宽窗口下希望看到几列。搜索页的密度按钮切换的就是它。
+  ///
+  /// 这里刻意不是「固定列数」：4K 屏把窗口拉到 2560 逻辑像素时，固定 4 列
+  /// 会把每张图撑到 600px，一屏只看得到五六张，密度形同虚设。密度只决定
+  /// 单张图的**目标宽度**，真正的列数由窗口宽度除以它算出来，
+  /// 所以宽屏上会自然变成 6–7 列，而每张图大小保持一致。
+  final int density;
+
+  /// 列宽的基准**内容区**宽度：1440 是设计稿画板宽度，减掉 56 的导轨才是网格能用的宽度。
+  ///
+  /// 这里必须减导轨：[columnsFor] 收到的是 LayoutBuilder 给的父约束宽度，那已经是
+  /// 扣掉导轨之后的内容区宽度。两边口径不一致时，1440 窗口会排出 3 列 428px 的图
+  /// （导轨占掉的 56px 被算成了可用空间），和设计稿的 4 列对不上。
+  static const double _baselineWidth = 1440 - AppTheme.railWidth;
+
+  /// 给定密度下每列应有的宽度。
+  ///
+  /// density=4 时：(1384 - 64 - 3×12) / 4 = 321。和 AppTheme.columnWidth(325)
+  /// 差 4，是设计稿把列宽取整到 5 的倍数留下的；这里按实际公式算，
+  /// 免得两处数字各自漂移。
+  static double columnWidthFor(int density) {
+    final d = density.clamp(2, 8);
+    final available =
+        _baselineWidth - AppTheme.pagePadding * 2 - AppTheme.gridGap * (d - 1);
+    return available / d;
+  }
+
+  /// 按可用宽度算列数。
+  ///
+  /// 用 round 而不是 floor：`width` 来自 LayoutBuilder，是浮点数除下来的结果，
+  /// 设计稿 1440 宽、导轨 56、外边距 64、缝 36 时算出来是 3.998 列，
+  /// floor 会把它砍成 3 列、每列撑到 429px，和设计稿的 4 列差一整列。
+  /// 密度只是「目标宽度」，取最近档才是它的本意。
+  ///
+  /// 放在 [PostGrid] 而不是 State 上，是因为首屏骨架 [SkeletonGrid] 也要用它：
+  /// 两处各算一套，骨架画 5 列、数据到了变 4 列，整屏图会横跳一次。
+  static int columnsFor(double width, int density) {
+    // 左右各一个 pagePadding 的外边距，别写字面量——改 padding 时会算错列数。
+    // 再减去 (n-1) 条缝：缝也算进可用宽度，否则 4 列会被缝推出边界。
+    final available = width - AppTheme.pagePadding * 2;
+    final target = columnWidthFor(density);
+    final count =
+        ((available + AppTheme.gridGap) / (target + AppTheme.gridGap)).round();
+    return count.clamp(2, 10);
+  }
+
   @override
   State<PostGrid> createState() => _PostGridState();
 }
 
 class _PostGridState extends State<PostGrid> {
   final ScrollController _controller = ScrollController();
-
-  /// 每列目标宽度。窗口从 900 到 4K 都能据此算出合适列数。
-  static const double _targetColumnWidth = 260;
 
   @override
   void initState() {
@@ -87,13 +131,6 @@ class _PostGridState extends State<PostGrid> {
     }
   }
 
-  static int columnsFor(double width) {
-    // 左右各一个 pagePadding 的外边距，别写字面量 32——改 padding 时会算错列数。
-    final available = width - AppTheme.pagePadding * 2;
-    final count = (available / _targetColumnWidth).floor();
-    return count.clamp(2, 8);
-  }
-
   @override
   Widget build(BuildContext context) {
     return AnimatedSwitcher(
@@ -101,7 +138,10 @@ class _PostGridState extends State<PostGrid> {
       switchInCurve: AppTheme.curveIn,
       switchOutCurve: AppTheme.curveOut,
       child: widget.posts.isEmpty && widget.initialLoading
-          ? const SkeletonGrid(key: ValueKey<String>('skeleton'))
+          ? SkeletonGrid(
+              key: const ValueKey<String>('skeleton'),
+              density: widget.density,
+            )
           : KeyedSubtree(
               key: const ValueKey<String>('content'),
               child: _content(context),
@@ -110,9 +150,11 @@ class _PostGridState extends State<PostGrid> {
   }
 
   Widget _content(BuildContext context) {
+    // 顶部不留白：搜索页的顶栏自带 79px 的内边距与底线，
+    // 画廊再垫一层 32 会在顶栏下面出现一条明显的空白带。
     const padding = EdgeInsets.fromLTRB(
       AppTheme.pagePadding,
-      AppTheme.pagePadding,
+      AppTheme.gapM,
       AppTheme.pagePadding,
       AppTheme.gapXxl,
     );
@@ -120,7 +162,7 @@ class _PostGridState extends State<PostGrid> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final columns = columnsFor(constraints.maxWidth);
+        final columns = PostGrid.columnsFor(constraints.maxWidth, widget.density);
         final slivers = <Widget>[
           if (header != null)
             SliverPadding(
@@ -149,8 +191,8 @@ class _PostGridState extends State<PostGrid> {
                 crossAxisCount: columns,
                 // 缝和页面外边距同值：缝比 12 的圆角大，卡片边界才清晰；
                 // 12 的缝正好等于圆角半径，视觉上会被「吃掉」显得粘连。
-                mainAxisSpacing: AppTheme.gapL,
-                crossAxisSpacing: AppTheme.gapL,
+                mainAxisSpacing: AppTheme.gridGap,
+                crossAxisSpacing: AppTheme.gridGap,
                 // 尾部留一格空位给「还有下一页」——不在格子流里放进度环：
                 // 瀑布流每列高度不一，尾部的环会出现在最短那列的中间，
                 // 看着像某张图加载失败。真正的进度提示放在视口底部悬浮。
