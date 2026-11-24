@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import '../../core/constants.dart';
 import '../../models/post_filter.dart';
 import '../../services/app_settings.dart';
+import '../../services/auto_start_service.dart';
 import '../../services/crop.dart';
 import '../../services/wallpaper_service.dart';
 import '../../services/yande_client.dart';
@@ -39,12 +40,22 @@ class _SettingsPageState extends State<SettingsPage> {
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _tagsController = TextEditingController();
   final TextEditingController _blacklistController = TextEditingController();
+  final FocusNode _blacklistFocus = FocusNode();
+
+  /// 黑名单 debounce：每键直接写 settings.filter 会逐键 jsonEncode +
+  /// 写盘 + notifyListeners（后者拖着全应用主题树重建）。停手 400ms
+  /// 才提交一次；失焦与退页立即提交，见 _commitBlacklist / dispose。
+  Timer? _blacklistDebounce;
+  String? _pendingBlacklist;
+
+  /// dispose 里不能再用 context.read（祖先已失活），缓存引用供退页提交。
+  AppSettings? _settingsRef;
 
   bool _signingIn = false;
 
   /// 当前选中的目录项。
   ///
-  /// 可用环境变量 PRPR_SETTINGS_SECTION=0..6 指定起始分节，与 home_page 的
+  /// 可用环境变量 PRPR_SETTINGS_SECTION=0..7 指定起始分节，与 home_page 的
   /// PRPR_TAB 同一套理由：桌面端没法可靠地模拟点击（150% DPI 下坐标换算
   /// 反复失准），要截某一节的图只能靠环境变量，不然每截一页都要改代码重编。
   int _index = _initialSection();
@@ -61,9 +72,10 @@ class _SettingsPageState extends State<SettingsPage> {
     ('02', '账号'),
     ('03', '换壁纸'),
     ('04', '自动换壁纸'),
-    ('05', '内容筛选'),
-    ('06', '外观'),
-    ('07', '关于'),
+    ('05', '系统'),
+    ('06', '内容筛选'),
+    ('07', '外观'),
+    ('08', '关于'),
   ];
 
   /// 每一节顶部的说明。只写「这一节在决定什么」，不复述控件文案。
@@ -72,6 +84,7 @@ class _SettingsPageState extends State<SettingsPage> {
     '收藏、投票、看自己的收藏夹都需要登录。',
     '每次换壁纸时挑哪张、怎么裁、贴成什么比例。',
     '程序开着的时候，按间隔自动换。',
+    '开机自启与关闭窗口时的行为。',
     '命中的图片不会出现在任何列表里。',
     '主题与显示偏好。',
     '版本、开源许可与致谢。',
@@ -92,6 +105,8 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     final s = context.read<AppSettings>();
+    _settingsRef = s;
+    _blacklistFocus.addListener(_onBlacklistFocus);
     _hostController.text = s.host;
     _saltController.text = s.passwordHashSalt;
     _userController.text = s.userName ?? '';
@@ -101,6 +116,18 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   void dispose() {
+    // 退页立即提交黑名单：debounce 定时器马上要取消，
+    // 用户最后敲的几个字不能丢。此处不走 _patchFilter（不能 setState）。
+    _blacklistDebounce?.cancel();
+    final pending = _pendingBlacklist;
+    final settings = _settingsRef;
+    if (pending != null &&
+        settings != null &&
+        settings.filter.tagBlacklist != pending) {
+      settings.filter = settings.filter.copyWith(tagBlacklist: pending);
+    }
+    _blacklistFocus.removeListener(_onBlacklistFocus);
+    _blacklistFocus.dispose();
     _hostController.dispose();
     _saltController.dispose();
     _userController.dispose();
@@ -115,6 +142,19 @@ class _SettingsPageState extends State<SettingsPage> {
   void _toast(String message) {
     if (!mounted) return;
     AppToast.error(context, message);
+  }
+
+  /// 开机自启开关：注册表是唯一事实来源，写成功才更新本地设置，
+  /// 否则开关显示「已开」而实际不会自启，比报错更误导。
+  Future<void> _setAutoStart(bool v) async {
+    final ok = await AutoStartService.setEnabled(v);
+    if (!mounted) return;
+    if (!ok) {
+      _toast(v ? '开机自启开启失败' : '开机自启关闭失败');
+      return;
+    }
+    context.read<AppSettings>().autoStartEnabled = v;
+    setState(() {});
   }
 
   void _clearHostError() {
@@ -139,6 +179,29 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() {});
   }
 
+  void _onBlacklistFocus() {
+    // 失焦立即提交，不等 debounce：用户点别处就是「改完了」的信号。
+    if (!_blacklistFocus.hasFocus) _commitBlacklist();
+  }
+
+  void _onBlacklistChanged(String v) {
+    _pendingBlacklist = v.trim();
+    _blacklistDebounce?.cancel();
+    _blacklistDebounce =
+        Timer(const Duration(milliseconds: 400), _commitBlacklist);
+  }
+
+  /// 把黑名单提交进设置。值没变就跳过，省一次写盘 + 全树 notify。
+  void _commitBlacklist() {
+    _blacklistDebounce?.cancel();
+    _blacklistDebounce = null;
+    final pending = _pendingBlacklist;
+    if (pending == null || !mounted) return;
+    _pendingBlacklist = null;
+    if (context.read<AppSettings>().filter.tagBlacklist == pending) return;
+    _patchFilter((f) => f.copyWith(tagBlacklist: pending));
+  }
+
   void _applyHost() {
     final settings = context.read<AppSettings>();
     final value = _hostController.text.trim();
@@ -149,7 +212,49 @@ class _SettingsPageState extends State<SettingsPage> {
     }
     setState(() => _hostError = null);
     settings.host = value.replaceAll(RegExp(r'/+$'), '');
-    _toast('已切换到 ${settings.host}');
+    // 成功回执走中性条：_toast 是 error 红条，不该给好消息用。
+    AppToast.neutral(context, '已切换到 ${settings.host}');
+  }
+
+  /// 退出登录是破坏性操作：本地凭据清掉后收藏/投票立刻失效。
+  /// 与历史页「清空」同一模式——先确认再执行，确认键用 danger 描边。
+  Future<void> _confirmSignOut(AppSettings s) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        final c = AppColor.of(context);
+        return AlertDialog(
+          backgroundColor: c.panel,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+            side: BorderSide(color: c.line),
+          ),
+          title: Text('退出登录', style: AppType.section.copyWith(color: c.ink)),
+          content: Text(
+            '将清除本机保存的用户名与密码哈希，收藏、投票需要重新登录后才能使用。',
+            style: AppType.body.copyWith(color: c.inkDim),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            OutlinedButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: c.danger,
+                side: BorderSide(color: c.danger.withValues(alpha: 0.5)),
+              ),
+              child: const Text('退出登录'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !mounted) return;
+    s.signOut();
+    setState(() {});
+    AppToast.neutral(context, '已退出登录');
   }
 
   Future<void> _signIn() async {
@@ -244,7 +349,7 @@ class _SettingsPageState extends State<SettingsPage> {
   /// 左侧编号目录。
   ///
   /// 不再自带「设置 / PREFERENCES」标题块 —— 页面名已经在顶栏上写了一次，
-  /// 目录里再写一遍只会把七个条目往下压 80px，第一屏反而看不到第三个以后。
+  /// 目录里再写一遍只会把八个条目往下压 80px，第一屏反而看不到第三个以后。
   Widget _buildNav(AppPalette c) {
     return SizedBox(
       width: AppTheme.settingsNavWidth,
@@ -381,7 +486,18 @@ class _SettingsPageState extends State<SettingsPage> {
             control: AppTextField(
               controller: _saltController,
               hint: 'password_salt',
-              onChanged: (v) => s.passwordHashSalt = v.trim(),
+              onChanged: (v) {
+                final salt = v.trim();
+                if (salt == s.passwordHashSalt) return;
+                s.passwordHashSalt = salt;
+                // 盐参与密码 SHA1：盐一改，旧哈希必然过不了站点校验，
+                // 投票/收藏会静默失败。清空哈希并提示重新登录，
+                // 把隐性失效变成显式提醒。
+                if (s.passwordHash != null) {
+                  s.passwordHash = null;
+                  AppToast.info(context, '盐已修改，请重新登录');
+                }
+              },
             ),
           ),
         ];
@@ -431,11 +547,7 @@ class _SettingsPageState extends State<SettingsPage> {
               control: Align(
                 alignment: Alignment.centerRight,
                 child: OutlinedButton(
-                  onPressed: () {
-                    s.signOut();
-                    setState(() {});
-                    _toast('已退出登录');
-                  },
+                  onPressed: () => _confirmSignOut(s),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: c.danger,
                     side: BorderSide(color: c.danger.withValues(alpha: 0.5)),
@@ -533,6 +645,7 @@ class _SettingsPageState extends State<SettingsPage> {
             c,
             label: '随机范围',
             hint: '只在最新的这么多张里随机，越小越新鲜。',
+            mergeSemantics: true,
             control: _slider(
               value: _shufflePreview ?? s.shuffleWindow.toDouble(),
               min: 1,
@@ -567,6 +680,7 @@ class _SettingsPageState extends State<SettingsPage> {
             label: '启用',
             hint: '程序开着的时候按下面的间隔自动换。',
             controlWidth: 320,
+            mergeSemantics: true,
             control: Align(
               alignment: Alignment.centerRight,
               child: Switch(
@@ -583,6 +697,7 @@ class _SettingsPageState extends State<SettingsPage> {
             last: true,
             label: '间隔',
             hint: '关闭「启用」后这一项不可调。',
+            mergeSemantics: true,
             control: _slider(
               value:
                   (_autoMinutesPreview ?? s.autoChangeMinutes.toDouble())
@@ -612,6 +727,41 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ];
       case 4:
+        return [
+          _row(
+            c,
+            label: '开机自启',
+            hint: '登录 Windows 后自动运行。写入当前用户的注册表 Run 键，无需管理员。',
+            controlWidth: 320,
+            mergeSemantics: true,
+            control: Align(
+              alignment: Alignment.centerRight,
+              child: Switch(
+                value: s.autoStartEnabled,
+                onChanged: _setAutoStart,
+              ),
+            ),
+          ),
+          _row(
+            c,
+            last: true,
+            label: '关闭时最小化到托盘',
+            hint: '开启后点关闭只是隐藏窗口，自动换壁纸继续；关闭则直接退出。',
+            controlWidth: 320,
+            mergeSemantics: true,
+            control: Align(
+              alignment: Alignment.centerRight,
+              child: Switch(
+                value: s.minimizeToTray,
+                onChanged: (v) {
+                  s.minimizeToTray = v;
+                  setState(() {});
+                },
+              ),
+            ),
+          ),
+        ];
+      case 5:
         return [
           AppSectionHeader('分级'),
           _switchRow(
@@ -680,15 +830,15 @@ class _SettingsPageState extends State<SettingsPage> {
             controlWidth: 420,
             control: AppTextField(
               controller: _blacklistController,
+              focusNode: _blacklistFocus,
               hint: '',
               minLines: 3,
               maxLines: 6,
-              onChanged: (v) =>
-                  _patchFilter((f) => f.copyWith(tagBlacklist: v.trim())),
+              onChanged: _onBlacklistChanged,
             ),
           ),
         ];
-      case 5:
+      case 6:
         return [
           _row(
             c,
@@ -709,7 +859,7 @@ class _SettingsPageState extends State<SettingsPage> {
             c,
             last: true,
             // 不再写「关于 PRPR / 版本 x.y.z，开源许可与致谢」——目录项已经叫
-            // 「07 关于」，节说明也已经是「版本、开源许可与致谢」，行里再复述
+            // 「08 关于」，节说明也已经是「版本、开源许可与致谢」，行里再复述
             // 一遍，同一屏上「关于」出现三次、版本号出现两次。
             label: '开源许可与致谢',
             hint: '列出全部第三方依赖及其许可证全文。',
@@ -737,8 +887,9 @@ class _SettingsPageState extends State<SettingsPage> {
     required Widget control,
     double controlWidth = 320,
     bool last = false,
+    bool mergeSemantics = false,
   }) {
-    return Container(
+    final row = Container(
       constraints: const BoxConstraints(minHeight: 72),
       decoration: BoxDecoration(
         border: last
@@ -772,6 +923,9 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
       ),
     );
+    // Switch/Slider 行合并整行语义：否则读屏把行标签和控件读成两个
+    // 不相干的节点，焦点停在控件上时听不出这是哪一项设置。
+    return mergeSemantics ? MergeSemantics(child: row) : row;
   }
 
   Widget _switchRow(
@@ -785,6 +939,7 @@ class _SettingsPageState extends State<SettingsPage> {
         c,
         label: label,
         hint: hint,
+        mergeSemantics: true,
         control: Align(
           alignment: Alignment.centerRight,
           child: Switch(value: value, onChanged: onChanged),

@@ -108,8 +108,22 @@ class _HomePageState extends State<HomePage>
     RailDestination(label: '设置  Ctrl+5', icon: Icons.tune),
   ];
 
+  /// 面包屑回跳信号。initState 里缓存引用，dispose 时不碰 context。
+  late final ValueNotifier<int> _backToSearch;
+
+  @override
+  void initState() {
+    super.initState();
+    // 详情页面包屑回跳：pop 之后由这个信号把首页切到搜索页。
+    _backToSearch = context.read<AppState>().backToSearchTick;
+    _backToSearch.addListener(_onBackToSearch);
+  }
+
+  void _onBackToSearch() => _select(0);
+
   @override
   void dispose() {
+    _backToSearch.removeListener(_onBackToSearch);
     _resultTimer?.cancel();
     _tabController.dispose();
     super.dispose();
@@ -153,9 +167,9 @@ class _HomePageState extends State<HomePage>
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-    final stage = state.currentStage;
-
+    // 这里不再 watch<AppState>：换壁纸每个阶段都 notify，而首页骨架
+    // 真正关心的只有轨底那颗按钮——把 currentStage 的订阅下沉到
+    // _WallpaperButton 内部（context.select），阶段推进只重建按钮。
     return Shortcuts(
       shortcuts: <ShortcutActivator, Intent>{
         for (var i = 0; i < _destinations.length; i++)
@@ -216,7 +230,6 @@ class _HomePageState extends State<HomePage>
                 onSelected: _select,
                 trailing: _WallpaperButton(
                   applying: _applying,
-                  stage: stage,
                   lastResult: _lastResult,
                   onTap: _changeNow,
                 ),
@@ -257,19 +270,21 @@ class _HomePageState extends State<HomePage>
 class _WallpaperButton extends StatelessWidget {
   const _WallpaperButton({
     required this.applying,
-    required this.stage,
     required this.lastResult,
     required this.onTap,
   });
 
   final bool applying;
-  final ChangeStage? stage;
   final ChangeResult? lastResult;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final c = AppColor.of(context);
+    // select 只订阅 currentStage：换壁纸的七次阶段通知里，
+    // 只有这颗按钮需要跟着变，首页骨架和其余四页原地不动。
+    final stage =
+        context.select<AppState, ChangeStage?>((s) => s.currentStage);
     final busy = stage != null || applying;
     final done = !busy && lastResult?.success == true;
 

@@ -58,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File tool\install.ps1
 
 ![设置页](../docs/screenshots/redesign/06-settings.png)
 
-关于页。应用图标是金色圆角底 + 深色猫脸，与导轨顶部那只 1.4px 金线猫头同源。
+关于页。应用图标是原 UWP 版那只白猫剪影，垫了一层靛蓝圆角底板（原图是纯白透明底，不加底板在任务栏上看不见）。
 
 ![关于页](../docs/screenshots/redesign/08-about-page.png)
 
@@ -196,22 +196,17 @@ lib/
 
 ## 图标
 
-图标不用位图拼贴，而是用 Pillow 直接画：金色圆角底（`AppPalette.dark.gold` = `#D8A657`）
-配深色猫脸（`AppPalette.dark.onGold` = `#14110A`），猫脸的路径与导轨顶部
-`ui/widgets/app_rail.dart` 里 `_CatPainter` 用的那条贝塞尔曲线同源——同一只猫，
-只是导轨上是 1.4px 金线，图标里是实心。
+应用图标是原 UWP 版的白猫剪影（`PRPR/Assets/Square44x44Logo.targetsize-256_altform-unplated.png`），
+但那张图是**纯白 + 全透明底**——原版靠系统磁贴底色透出剪影，桌面版没有这层，
+直接拿来当图标在任务栏上就是一片空白。
 
-> 早先的版本沿用 UWP 的白猫剪影（`PRPR/Assets/Square44x44Logo…png`）垫靛蓝底板。
-> 强调色换成金色之后，蓝紫图标与金色标题栏是两套视觉，所以整段重画。
+所以 `app/tool/make_icon.py` 做了两步：垫一个靛蓝（`0xFF5B6ABF`）圆角底板，
+再按尺寸分档缩放剪影（16/20/24 用 0.86、32/40 用 0.80、48/64/72 用 0.74、更大用 0.68）——
+小尺寸不放大图案的话，方框和猫脸会糊成一团。
 
-**每个尺寸单独绘制，而不是从 512 缩下来。** 16px 若按大图比例缩放，线条只剩 0.6px，
-LANCZOS 平均后会变成一圈灰边，整只猫糊成方块。所以 `render(size)` 先以 8 倍尺寸画，
-线宽与脸的尺度按档位补偿（≤24px 线更粗、脸更小），再缩回目标尺寸，等于自带超采样。
-耳朵用实心三角而非描边三角——描边三角的根部会和脸留下缝隙，小尺寸下同样糊。
-
-脚本同时产出两样东西：`app/assets/app_logo.png`（512，关于页用）与
-`app/windows/runner/resources/app_icon.ico`（9 个尺寸：16/20/24/32/40/48/64/128/256，
-exe / 任务栏 / 快捷方式读它）。改配色或改形状之后重跑一次即可：
+脚本同时产出两样东西：`app/assets/app_logo.png`（512，界面里用）与
+`app/windows/runner/resources/app_icon.ico`（9 个尺寸，exe / 任务栏 / 快捷方式读它）。
+改配色或换图之后重跑一次即可：
 
 ```
 python app/tool/make_icon.py

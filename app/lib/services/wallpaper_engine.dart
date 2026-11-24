@@ -1,9 +1,9 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:math' as math;
-import 'dart:typed_data';
-import 'dart:ui' as ui;
 import 'dart:ui' show Rect, Size;
 
+import 'package:opencv_dart/opencv.dart' as cv;
 import 'package:path_provider/path_provider.dart';
 
 import '../core/constants.dart';
@@ -146,7 +146,7 @@ class WallpaperEngine {
         return const ChangeResult(success: false, message: '没有筛选出可用的图片，请检查标签与过滤设置');
       }
 
-      // ---------- 2. 下载 ----------
+      // ---------- 2. 下载（流式落盘） ----------
       stage(ChangeStage.downloading);
       final version = _versionForQuality(settings.qualityLevel);
       final url = post.urlFor(version);
@@ -158,8 +158,17 @@ class WallpaperEngine {
         );
       }
 
-      final downloaded = await _downloadBytes(url);
-      if (downloaded == null) {
+      final method = CropMethod.fromValue(settings.cropMethodIndex);
+      final screen = ScreenInfo.primaryScreenSize();
+      final workDir = await _workDir();
+      final ext = post.fileExtension.isEmpty ? 'jpg' : post.fileExtension;
+      final originalPath =
+          '${workDir.path}${Platform.pathSeparator}${post.id}-original.$ext';
+
+      // 流式下载直接写原图文件：慢代理下大图不再被 12s 整体超时截断。
+      final downloaded =
+          await client.downloadImageToFile(url, File(originalPath));
+      if (!downloaded) {
         return ChangeResult(
           success: false,
           message: '图片下载失败：$url',
@@ -167,48 +176,34 @@ class WallpaperEngine {
         );
       }
 
-      // ---------- 3. 解码 + 人脸检测 ----------
-      final method = CropMethod.fromValue(settings.cropMethodIndex);
-      final screen = ScreenInfo.primaryScreenSize();
-
-      final decoded = await _decodeSize(downloaded);
-      final imageSize = decoded ?? screen;
-
-      var faces = const <Rect>[];
-      if (method == CropMethod.mostFaces || method == CropMethod.biggestFace) {
-        stage(ChangeStage.detecting);
-        faces = await _detectFaces(downloaded, imageSize);
-      }
-
-      // ---------- 4. 裁剪 ----------
-      stage(ChangeStage.cropping);
-      final cropRect = CropCalculator.compute(
-        method,
-        imageSize,
-        screen,
-        faces: faces,
-      );
-
-      final workDir = await _workDir();
-      final ext = post.fileExtension.isEmpty ? 'jpg' : post.fileExtension;
-      final originalPath =
-          '${workDir.path}${Platform.pathSeparator}${post.id}-original.$ext';
-      await File(originalPath).writeAsBytes(downloaded, flush: true);
-
-      // 不裁剪时直接把下载到的原图交给系统：省一次完整编解码，
-      // 也避免把 JPEG 字节写进 .png 文件名里。
+      // ---------- 3. 解码 + 人脸检测 + 裁剪 + JPEG（单 isolate，一次全量解码） ----------
+      // 不裁剪时直接把下载到的原图交给系统：省一次完整编解码。
       var croppedPath = originalPath;
       if (method != CropMethod.none) {
-        croppedPath = '${workDir.path}${Platform.pathSeparator}${post.id}.png';
-        final cropped = await _cropImage(downloaded, cropRect);
-        if (cropped == null) {
+        final needFaces =
+            method == CropMethod.mostFaces || method == CropMethod.biggestFace;
+        if (needFaces) stage(ChangeStage.detecting);
+        final cascadePath =
+            needFaces ? await _detector.ensureCascadeFile() : null;
+        stage(ChangeStage.cropping);
+        croppedPath = '${workDir.path}${Platform.pathSeparator}${post.id}.jpg';
+        final result = await Isolate.run(
+          () => _processInIsolate((
+            originalPath: originalPath,
+            croppedPath: croppedPath,
+            methodValue: method.value,
+            screenW: screen.width,
+            screenH: screen.height,
+            cascadePath: cascadePath,
+          )),
+        );
+        if (!result.ok) {
           return ChangeResult(
             success: false,
             message: '图片裁剪失败（帖子 #${post.id}）',
             postId: post.id,
           );
         }
-        await File(croppedPath).writeAsBytes(cropped, flush: true);
       }
 
       // ---------- 5. 应用 ----------
@@ -294,8 +289,22 @@ class WallpaperEngine {
     var candidates = page.items.where(filter.apply).toList();
 
     if (candidates.isEmpty) {
-      // 首屏全被过滤掉时退一步：放宽过滤，至少要能换一张
-      candidates = page.items.where((p) => p.urlFor(_versionForQuality(settings.qualityLevel)).isNotEmpty).toList();
+      // 首屏全被过滤掉时退一步：放宽分级 / 横竖 / 可见性 / held，至少要能换一张；
+      // 但黑名单始终保留——设置页承诺「黑名单不会出现在任何列表」，兜底也不能破例。
+      // copyWith 不覆盖 tagBlacklist，用户的黑名单原样带进放宽后的筛选。
+      final relaxed = filter.copyWith(
+        isFilterSafe: true,
+        isFilterQuestionable: true,
+        isFilterExplicit: true,
+        isFilterHorizontal: true,
+        isFilterVertical: true,
+        isFilterAllowHidden: true,
+        isFilterAllowHeld: true,
+      );
+      final version = _versionForQuality(settings.qualityLevel);
+      candidates = page.items
+          .where((p) => relaxed.apply(p) && p.urlFor(version).isNotEmpty)
+          .toList();
     }
     if (candidates.isEmpty) return null;
 
@@ -307,113 +316,121 @@ class WallpaperEngine {
     return pool[_random.nextInt(window)];
   }
 
-  Future<Uint8List?> _downloadBytes(String url) async {
-    try {
-      final response = await client.downloadImage(url);
-      if (response.statusCode != 200) return null;
-      return response.bodyBytes;
-    } catch (_) {
-      return null;
-    }
-  }
+  /// 裁剪输出 JPEG 质量。Windows 的 SystemParametersInfo 认 jpg，
+  /// 90 在肉眼无损与文件体积之间取平衡（原先 PNG 无损但编码慢、体积大）。
+  static const int _jpegQuality = 90;
 
-  /// 解码出图片尺寸，不做完整解码。
-  Future<Size?> _decodeSize(Uint8List bytes) async {
-    try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final size = Size(
-        frame.image.width.toDouble(),
-        frame.image.height.toDouble(),
-      );
-      frame.image.dispose();
-      codec.dispose();
-      return size;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// 检测人脸并把结果映射回原图坐标。
+  /// 在单个后台 isolate 里完成「解码 → 尺寸 → 人脸检测 → 裁剪 → JPEG 写盘」。
   ///
-  /// 原版是在站点给的 preview 图上做检测、再用 `ScaleFaces` 把坐标放大回原图；
-  /// 这里等价：原图长边超过 [AppConstants.faceDetectMaxDimension] 时先缩到该尺寸
-  /// 再送去检测，拿到结果后按比例映射回原图。
+  /// 为什么合并：原先 _decodeSize 全量解码一次拿尺寸、_cropImage 再全量解码
+  /// 一次裁剪，外加 PNG 重编码与缩略图 PNG→cv.imdecode 往返。合并后整条管线
+  /// 只对全分辨率图像解码 **一次**（cv.imdecode），检测直接在已解码的 Mat 上
+  /// 做（必要时 cv.resize 出缩略图，不再二次解码全图），裁剪用 Mat.region，
+  /// 输出 cv.imwrite JPEG。crop.dart 的几何算法保持纯函数不动，其输出的
+  /// cropRect 在这里换算成整数 ROI 交给 cv 裁剪。
   ///
-  /// 为什么要缩：级联参数（minSize=30）是在预览图这一档尺寸下调出来的。
-  /// 直接对 4000px 原图跑 `detectMultiScale` 会慢到几十秒，而且大量细小图案
-  /// 会被误判成人脸，反而把裁剪框拉偏。
-  Future<List<Rect>> _detectFaces(Uint8List bytes, Size fullSize) async {
-    final longest = math.max(fullSize.width, fullSize.height);
-    if (longest <= AppConstants.faceDetectMaxDimension) {
-      return _detector.detectFromBytes(bytes);
-    }
+  /// 入参全是平坦数据（路径/数值/字符串），可安全跨 isolate；返回 record 同理。
+  /// 原图已由流式下载写在 originalPath，这里直接读文件，避免主 isolate 持有大图字节。
+  static ({bool ok, String? error}) _processInIsolate(
+    ({
+      String originalPath,
+      String croppedPath,
+      int methodValue,
+      double screenW,
+      double screenH,
+      String? cascadePath,
+    }) args,
+  ) {
+    cv.Mat? mat;
+    cv.Mat? roi;
+    cv.VecI32? params;
+    try {
+      final bytes = File(args.originalPath).readAsBytesSync();
+      mat = cv.imdecode(bytes, cv.IMREAD_COLOR);
+      if (mat.isEmpty) return (ok: false, error: '图片解码失败');
+      final imgW = mat.cols;
+      final imgH = mat.rows;
+      final method = CropMethod.fromValue(args.methodValue);
 
-    final scale = AppConstants.faceDetectMaxDimension / longest;
-    final targetWidth = (fullSize.width * scale).round().clamp(1, 1 << 20);
-    final smallBytes = await _decodeResized(bytes, targetWidth);
-    if (smallBytes == null) {
-      // 缩放失败就退回原图检测：慢，但至少还能出结果
-      return _detector.detectFromBytes(bytes);
-    }
+      var faces = const <Rect>[];
+      final needFaces =
+          method == CropMethod.mostFaces || method == CropMethod.biggestFace;
+      if (needFaces && args.cascadePath != null) {
+        faces = _detectFacesOnMat(mat, args.cascadePath!, imgW, imgH);
+      }
 
-    final smallSize = await _decodeSize(smallBytes) ?? fullSize;
-    final faces = await _detector.detectFromBytes(smallBytes);
-    return CropCalculator.scaleFaces(faces, smallSize, fullSize);
+      final cropRect = CropCalculator.compute(
+        method,
+        Size(imgW.toDouble(), imgH.toDouble()),
+        Size(args.screenW, args.screenH),
+        faces: faces,
+      );
+
+      // 夹紧到图内并取整：Mat.region 断言 right<=cols、bottom<=rows，
+      // 浮点裁剪框可能越界，这里等价于原 _cropImage 的 intersect 处理。
+      final src = cropRect
+          .intersect(Rect.fromLTWH(0, 0, imgW.toDouble(), imgH.toDouble()));
+      final x = src.left.round().clamp(0, imgW - 1).toInt();
+      final y = src.top.round().clamp(0, imgH - 1).toInt();
+      final w = src.width.round().clamp(1, imgW - x).toInt();
+      final h = src.height.round().clamp(1, imgH - y).toInt();
+      roi = mat.region(cv.Rect(x, y, w, h));
+
+      params = cv.VecI32.fromList([cv.IMWRITE_JPEG_QUALITY, _jpegQuality]);
+      final ok = cv.imwrite(args.croppedPath, roi, params: params);
+      return ok ? (ok: true, error: null) : (ok: false, error: 'JPEG 写盘失败');
+    } catch (e) {
+      return (ok: false, error: '$e');
+    } finally {
+      params?.dispose();
+      roi?.dispose();
+      mat?.dispose();
+    }
   }
 
-  /// 按目标宽度把图片解码成 PNG 字节，用作检测用的缩略图。
-  Future<Uint8List?> _decodeResized(Uint8List bytes, int targetWidth) async {
-    try {
-      final codec =
-          await ui.instantiateImageCodec(bytes, targetWidth: targetWidth);
-      final frame = await codec.getNextFrame();
-      final image = frame.image;
-      codec.dispose();
-      final data = await image.toByteData(format: ui.ImageByteFormat.png);
-      image.dispose();
-      if (data == null) return null;
-      return data.buffer.asUint8List();
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// 按裁剪矩形裁剪并输出 PNG 字节。
+  /// 在已解码的全图 Mat 上检测人脸，并把坐标映射回原图。
   ///
-  /// 输出 PNG 而不是 JPEG：`dart:ui` 只能编码 PNG。Windows 的壁纸设置
-  /// 认文件内容不认扩展名，所以写 `.png` 后缀是正确的做法。
-  Future<Uint8List?> _cropImage(Uint8List bytes, Rect cropRect) async {
+  /// 长边超过 [AppConstants.faceDetectMaxDimension] 时先 cv.resize 出缩略图
+  /// 再检测（级联参数是在预览图尺寸下调出来的，直接跑 4000px 原图会慢且误检），
+  /// 拿到结果后按比例放大回原图——等价于原 _detectFaces + CropCalculator.scaleFaces。
+  static List<Rect> _detectFacesOnMat(
+    cv.Mat mat,
+    String cascadePath,
+    int imgW,
+    int imgH,
+  ) {
+    final longest = math.max(imgW, imgH);
+    cv.Mat? thumb;
     try {
-      final codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final image = frame.image;
-      codec.dispose();
-
-      // 用 dart:ui 的 Canvas 做一次子区域重绘，等价于原版的 BitmapTransform.CroppedBitmap
-      final recorder = ui.PictureRecorder();
-      final canvas = ui.Canvas(recorder);
-      final src = cropRect.intersect(
-        Rect.fromLTWH(0, 0, image.width.toDouble(), image.height.toDouble()),
+      cv.Mat detectMat = mat;
+      var sx = 1.0;
+      var sy = 1.0;
+      if (longest > AppConstants.faceDetectMaxDimension) {
+        final scale = AppConstants.faceDetectMaxDimension / longest;
+        final tw = (imgW * scale).round().clamp(1, 1 << 20).toInt();
+        final th = (imgH * scale).round().clamp(1, 1 << 20).toInt();
+        thumb = cv.resize(mat, (tw, th), interpolation: cv.INTER_AREA);
+        detectMat = thumb;
+        sx = imgW / tw;
+        sy = imgH / th;
+      }
+      final flat = AnimeFaceDetector.detectOnDecodedMat(
+        detectMat,
+        cascadePath: cascadePath,
       );
-      final dst = Rect.fromLTWH(0, 0, src.width, src.height);
-      canvas.drawImageRect(image, src, dst, ui.Paint());
-      final picture = recorder.endRecording();
-      final croppedImage = await picture.toImage(
-        src.width.round().clamp(1, 1 << 20),
-        src.height.round().clamp(1, 1 << 20),
-      );
-      picture.dispose();
-      image.dispose();
-
-      final byteData = await croppedImage.toByteData(
-        format: ui.ImageByteFormat.png,
-      );
-      croppedImage.dispose();
-      if (byteData == null) return null;
-      return byteData.buffer.asUint8List();
+      return <Rect>[
+        for (var i = 0; i + 3 < flat.length; i += 4)
+          Rect.fromLTWH(
+            flat[i] * sx,
+            flat[i + 1] * sy,
+            flat[i + 2] * sx,
+            flat[i + 3] * sy,
+          ),
+      ];
     } catch (_) {
-      return null;
+      return const <Rect>[];
+    } finally {
+      thumb?.dispose();
     }
   }
 
@@ -442,42 +459,45 @@ class WallpaperEngine {
         );
       }
 
-      final bytes = await _downloadBytes(url);
-      if (bytes == null) {
+      final method = CropMethod.fromValue(settings.cropMethodIndex);
+      final screen = ScreenInfo.primaryScreenSize();
+      final workDir = await _workDir();
+      final ext = post.fileExtension.isEmpty ? 'jpg' : post.fileExtension;
+      final originalPath =
+          '${workDir.path}${Platform.pathSeparator}${post.id}-original.$ext';
+
+      final downloaded =
+          await client.downloadImageToFile(url, File(originalPath));
+      if (!downloaded) {
         return ChangeResult(success: false, message: '图片下载失败', postId: post.id);
       }
 
-      final method = CropMethod.fromValue(settings.cropMethodIndex);
-      final screen = ScreenInfo.primaryScreenSize();
-      final decoded = await _decodeSize(bytes);
-      final imageSize = decoded ?? screen;
-
-      var faces = const <Rect>[];
-      if (method == CropMethod.mostFaces || method == CropMethod.biggestFace) {
-        stage(ChangeStage.detecting);
-        faces = await _detectFaces(bytes, imageSize);
-      }
-
-      stage(ChangeStage.cropping);
-      final cropRect =
-          CropCalculator.compute(method, imageSize, screen, faces: faces);
-
-      final workDir = await _workDir();
-      final ext = post.fileExtension.isEmpty ? 'jpg' : post.fileExtension;
-      var croppedPath = '${workDir.path}${Platform.pathSeparator}${post.id}-original.$ext';
-      await File(croppedPath).writeAsBytes(bytes, flush: true);
-
+      var croppedPath = originalPath;
       if (method != CropMethod.none) {
-        croppedPath = '${workDir.path}${Platform.pathSeparator}${post.id}.png';
-        final cropped = await _cropImage(bytes, cropRect);
-        if (cropped == null) {
+        final needFaces =
+            method == CropMethod.mostFaces || method == CropMethod.biggestFace;
+        if (needFaces) stage(ChangeStage.detecting);
+        final cascadePath =
+            needFaces ? await _detector.ensureCascadeFile() : null;
+        stage(ChangeStage.cropping);
+        croppedPath = '${workDir.path}${Platform.pathSeparator}${post.id}.jpg';
+        final result = await Isolate.run(
+          () => _processInIsolate((
+            originalPath: originalPath,
+            croppedPath: croppedPath,
+            methodValue: method.value,
+            screenW: screen.width,
+            screenH: screen.height,
+            cascadePath: cascadePath,
+          )),
+        );
+        if (!result.ok) {
           return ChangeResult(
             success: false,
             message: '图片裁剪失败',
             postId: post.id,
           );
         }
-        await File(croppedPath).writeAsBytes(cropped, flush: true);
       }
 
       stage(ChangeStage.applying);

@@ -22,6 +22,18 @@ abstract final class AppToast {
     _show(context, message, _ToastKind.info);
   }
 
+  /// 中性确认。用于「已切换站点」「已退出登录」这类操作回执：
+  /// 它们不是失败，不该顶着 error 的红条出现，吓用户一跳。
+  static void neutral(BuildContext context, String message) {
+    _show(context, message, _ToastKind.neutral);
+  }
+
+  /// 成功提示。绿色竖线。原则上成功仍然优先靠界面状态变化表达
+  /// （见类注释），只有状态变化不可见时才用这条。
+  static void success(BuildContext context, String message) {
+    _show(context, message, _ToastKind.success);
+  }
+
   static void _show(BuildContext context, String message, _ToastKind kind) {
     final messenger = ScaffoldMessenger.maybeOf(context);
     if (messenger == null) return;
@@ -37,7 +49,11 @@ abstract final class AppToast {
               width: 2,
               height: 14,
               decoration: BoxDecoration(
-                color: kind == _ToastKind.error ? c.danger : c.inkFaint,
+                color: switch (kind) {
+                  _ToastKind.error => c.danger,
+                  _ToastKind.success => c.safe,
+                  _ => c.inkFaint,
+                },
                 borderRadius: BorderRadius.circular(1),
               ),
             ),
@@ -71,4 +87,4 @@ abstract final class AppToast {
   }
 }
 
-enum _ToastKind { error, info }
+enum _ToastKind { error, info, neutral, success }

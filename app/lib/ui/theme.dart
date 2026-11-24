@@ -160,9 +160,15 @@ class AppTheme {
   /// 整体状态变幻（主题切换、侧栏宽度）。
   static const Curve curveEmph = Curves.easeInOutCubic;
 
-  static ThemeData light() => _build(Brightness.light);
+  // ThemeData 一次构造要组装几十个 WidgetStateProperty，而它只随明暗档
+  // 变化。_build 是纯 token 组装、不依赖 context，缓存成 static final，
+  // MaterialApp 每次重建不再重算整套主题。
+  static final ThemeData _lightCache = _build(Brightness.light);
+  static final ThemeData _darkCache = _build(Brightness.dark);
 
-  static ThemeData dark() => _build(Brightness.dark);
+  static ThemeData light() => _lightCache;
+
+  static ThemeData dark() => _darkCache;
 
   static ThemeData _build(Brightness brightness) {
     final isDark = brightness == Brightness.dark;
@@ -172,6 +178,19 @@ class AppTheme {
     final buttonShape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(buttonRadius),
     );
+
+    // 键盘焦点环：原来只有 gold@0.24 的 overlay，深色底上几乎看不见。
+    // 统一改成 focused 态 2px 描边，按钮主题一处全局生效。
+    // 金色实底的 FilledButton 例外：金边叠金底不可辨，用 onGold 深色边。
+    WidgetStateProperty<BorderSide?> focusSide(
+      Color color, {
+      BorderSide? normal,
+    }) =>
+        WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.focused)
+              ? BorderSide(color: color, width: 2)
+              : normal,
+        );
 
     return ThemeData(
       useMaterial3: true,
@@ -218,7 +237,7 @@ class AppTheme {
           textStyle:
               AppType.body.copyWith(fontWeight: FontWeight.w600, height: 1.2),
           shape: buttonShape,
-        ),
+        ).copyWith(side: focusSide(c.onGold)),
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
@@ -227,6 +246,8 @@ class AppTheme {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           textStyle: AppType.body.copyWith(height: 1.2),
           shape: buttonShape,
+        ).copyWith(
+          side: focusSide(c.gold, normal: BorderSide(color: c.lineStrong)),
         ),
       ),
       textButtonTheme: TextButtonThemeData(
@@ -235,7 +256,7 @@ class AppTheme {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           textStyle: AppType.body.copyWith(height: 1.2),
           shape: buttonShape,
-        ),
+        ).copyWith(side: focusSide(c.gold)),
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
@@ -245,6 +266,12 @@ class AppTheme {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
           textStyle: AppType.body.copyWith(height: 1.2),
           shape: buttonShape,
+        ).copyWith(side: focusSide(c.gold)),
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: ButtonStyle(
+          shape: WidgetStatePropertyAll(buttonShape),
+          side: focusSide(c.gold),
         ),
       ),
       // 桌面端必须有明确可抓的滚动条：Windows 默认那条极细且颜色浅，
@@ -521,7 +548,9 @@ class AppPalette {
     lineStrong: Color(0xFF333845),
     ink: Color(0xFFECEFF3),
     inkDim: Color(0xFF9AA1AE),
-    inkFaint: Color(0xFF666D7C),
+    // #666D7C 在 bg 上只有 3.77:1，低于 WCAG AA 的 4.5:1；
+    // 提亮到 #7E8697（≈5.3:1），说明性小字才读得清。
+    inkFaint: Color(0xFF7E8697),
     gold: Color(0xFFD8A657),
     goldText: Color(0xFFD8A657),
     safe: Color(0xFF6FBF8B),
@@ -541,7 +570,9 @@ class AppPalette {
     lineStrong: Color(0xFFD2D4DE),
     ink: Color(0xFF1A1C22),
     inkDim: Color(0xFF5A6070),
-    inkFaint: Color(0xFF858B99),
+    // 浅色档同样要过 4.5:1：#858B99 在 #F7F7FA 上只有约 3.2:1，
+    // 压深到 #666D7C（≈4.9:1），仍比 inkDim 浅一档，层级不变。
+    inkFaint: Color(0xFF666D7C),
     gold: Color(0xFFD8A657),
     goldText: Color(0xFF8A6414),
     safe: Color(0xFF2E8B57),

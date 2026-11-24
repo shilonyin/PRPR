@@ -1,4 +1,5 @@
 import '../models/post.dart';
+import '../models/post_filter.dart';
 import '../models/tag.dart';
 
 /// 「每日精选」的数据装配。对应原 `FeatureViewModel` 的 Update / UpdateTop3 /
@@ -27,11 +28,16 @@ class DailyFeature {
   /// 从 [posts] 装配。调用者负责保证 posts 是 `rating:s` 且已按时间倒序。
   ///
   /// [tagLookup] 用来把标签名映射到详情（类型 / 别名），
-  /// 对应原 `TagDataBase.AllTags`；取不到时按 `TagType.none0` 处理。
+  /// 对应原 `TagDataBase.AllTags`；取不到时按 `TagType.none` 处理。
+  ///
+  /// [filter] 传入时套用完整内容筛选（分级 / 横竖 / 可见性 / held / 黑名单），
+  /// 与搜索页 `postsFor` 同一套谓词，保证「黑名单不会出现在任何列表」；
+  /// 不传时退回仅按 [tagBlacklist] 过滤的旧行为（保留给现有调用方与测试）。
   factory DailyFeature.build(
     List<Post> posts, {
     Map<String, TagDetail>? tagLookup,
     String tagBlacklist = '',
+    PostFilter? filter,
   }) {
     if (posts.isEmpty) return empty;
 
@@ -47,6 +53,8 @@ class DailyFeature {
         .toSet();
 
     final kept = today.where((p) {
+      // 传了完整筛选就走它（黑名单已含在内）；否则走旧的仅黑名单路径。
+      if (filter != null) return filter.apply(p);
       if (blocked.isEmpty) return true;
       return !p.tagList.any((t) => blocked.contains(t.toLowerCase()));
     }).toList(growable: false);

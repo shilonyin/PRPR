@@ -40,6 +40,8 @@ class AppSettings extends ChangeNotifier {
   static const String _kDefaultTags = 'defaultTags';
   static const String _kThemeMode = 'themeMode';
   static const String _kFitMode = 'fitMode';
+  static const String _kAutoStartEnabled = 'autoStartEnabled';
+  static const String _kMinimizeToTray = 'minimizeToTray';
 
   static Future<AppSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -120,19 +122,33 @@ class AppSettings extends ChangeNotifier {
 
   // ---------- 筛选 ----------
 
+  // filter 的内存缓存：设置页一次 build 会读 7 次 filter，原先每次都
+  // jsonDecode 一遍黑名单串。缓存以「原始 JSON 串」为键，setter 时失效；
+  // 即便外部直接改了 prefs，raw 变了也会自然重新解析，不会读到脏缓存。
+  PostFilter? _filterCache;
+  String? _filterCacheRaw;
+
   PostFilter get filter {
     final raw = _prefs.getString(_kFilter);
     if (raw == null) {
       return const PostFilter(tagBlacklist: AppConstants.defaultTagBlacklist);
     }
+    if (_filterCache != null && _filterCacheRaw == raw) {
+      return _filterCache!;
+    }
     try {
-      return PostFilter.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      final parsed = PostFilter.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      _filterCache = parsed;
+      _filterCacheRaw = raw;
+      return parsed;
     } catch (_) {
       return const PostFilter(tagBlacklist: AppConstants.defaultTagBlacklist);
     }
   }
 
   set filter(PostFilter v) {
+    _filterCache = null;
+    _filterCacheRaw = null;
     _track(_prefs.setString(_kFilter, jsonEncode(v.toJson())));
     notifyListeners();
   }
@@ -194,6 +210,24 @@ class AppSettings extends ChangeNotifier {
   int get fitMode => _prefs.getInt(_kFitMode) ?? 4;
   set fitMode(int v) {
     _track(_prefs.setInt(_kFitMode, v));
+    notifyListeners();
+  }
+
+  // ---------- 系统 ----------
+
+  /// 开机自启。注册表写入由 AutoStartService 完成，这里只记录用户的选择，
+  /// 作为设置页开关的数据源；写注册表失败时不会更新这个值。
+  bool get autoStartEnabled => _prefs.getBool(_kAutoStartEnabled) ?? false;
+  set autoStartEnabled(bool v) {
+    _track(_prefs.setBool(_kAutoStartEnabled, v));
+    notifyListeners();
+  }
+
+  /// 关闭主窗口时隐藏到托盘而不是退出，默认开启：
+  /// 壁纸客户端的价值就在后台常驻，自动换壁纸定时器依赖进程存活。
+  bool get minimizeToTray => _prefs.getBool(_kMinimizeToTray) ?? true;
+  set minimizeToTray(bool v) {
+    _track(_prefs.setBool(_kMinimizeToTray, v));
     notifyListeners();
   }
 }

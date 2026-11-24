@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path_provider/path_provider.dart';
 
 import '../models/posts_page.dart';
@@ -41,8 +42,16 @@ class HistoryStore {
             }
           }
         }
-      } catch (_) {
-        // 文件损坏时静默重置：历史记录不值得阻塞启动
+      } catch (e) {
+        // 损坏不再静默重置：留一份 .bak 供事后排查（用户可能想找回记录），
+        // 再清空内存继续启动——历史记录不值得阻塞启动，但也不该无声丢失。
+        debugPrint('HistoryStore: 历史文件损坏，已备份 .bak 并重置：$e');
+        items.clear();
+        try {
+          await file.copy('${file.path}.bak');
+        } catch (_) {
+          // 备份失败（磁盘满/权限）不影响重置本身
+        }
       }
     }
 
@@ -82,8 +91,9 @@ class HistoryStore {
       final tmp = File('${_file.path}.tmp');
       await tmp.writeAsString(payload, flush: true);
       await tmp.rename(_file.path);
-    } catch (_) {
-      // 落盘失败不影响本次换壁纸
+    } catch (e) {
+      // 落盘失败不影响本次换壁纸，但要留下日志，否则「历史没保存」无从排查。
+      debugPrint('HistoryStore: 历史落盘失败（不影响本次换壁纸）：$e');
     }
   }
 }

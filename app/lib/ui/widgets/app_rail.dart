@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme.dart';
 
@@ -89,6 +90,7 @@ class _RailItem extends StatefulWidget {
 
 class _RailItemState extends State<_RailItem> {
   bool _hover = false;
+  bool _focused = false;
 
   @override
   Widget build(BuildContext context) {
@@ -100,83 +102,116 @@ class _RailItemState extends State<_RailItem> {
       message: widget.destination.label,
       waitDuration: const Duration(milliseconds: 420),
       preferBelow: false,
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
-        child: GestureDetector(
-          onTap: widget.onTap,
-          behavior: HitTestBehavior.opaque,
-          child: SizedBox(
-            width: AppTheme.railWidth,
-            height: AppTheme.railItemSize + 8,
-            child: Center(
-              child: AnimatedContainer(
-                duration: AppTheme.durFast,
-                curve: AppTheme.curveEmph,
-                width: AppTheme.railItemSize,
-                height: AppTheme.railItemSize,
-                decoration: BoxDecoration(
-                  color: selected
-                      ? c.surface
-                      : (_hover ? c.surface.withValues(alpha: 0.55) : null),
-                  borderRadius:
-                      BorderRadius.circular(AppTheme.railItemRadius),
-                ),
-                child: Stack(
-                  children: [
-                    Center(
-                      child: AnimatedScale(
-                        scale: _hover && !selected ? 1.08 : 1,
-                        duration: AppTheme.durMicro,
-                        child: Icon(
-                          widget.destination.icon,
-                          size: AppTheme.iconSm,
-                          color: iconColor,
-                        ),
-                      ),
+      // 键盘/读屏可达：裸 GestureDetector 不可聚焦、也没有 button 语义，
+      // 键盘用户此前只能靠 Ctrl+1..5 切页。这里补上焦点、回车/空格激活
+      // 与「按钮 + 当前项」的读屏播报；焦点环复用 post_tile 的 2px 金环模式。
+      child: Semantics(
+        button: true,
+        label: widget.destination.label,
+        selected: selected,
+        child: FocusableActionDetector(
+          onShowFocusHighlight: (value) {
+            if (_focused == value) return;
+            setState(() => _focused = value);
+          },
+          shortcuts: const <ShortcutActivator, Intent>{
+            SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
+            SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
+          },
+          actions: <Type, Action<Intent>>{
+            ActivateIntent: CallbackAction<ActivateIntent>(
+              onInvoke: (_) {
+                widget.onTap();
+                return null;
+              },
+            ),
+          },
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            onEnter: (_) => setState(() => _hover = true),
+            onExit: (_) => setState(() => _hover = false),
+            child: GestureDetector(
+              onTap: widget.onTap,
+              behavior: HitTestBehavior.opaque,
+              child: SizedBox(
+                width: AppTheme.railWidth,
+                height: AppTheme.railItemSize + 8,
+                child: Center(
+                  child: AnimatedContainer(
+                    duration: AppTheme.durFast,
+                    curve: AppTheme.curveEmph,
+                    width: AppTheme.railItemSize,
+                    height: AppTheme.railItemSize,
+                    decoration: BoxDecoration(
+                      color: selected
+                          ? c.surface
+                          : (_hover
+                              ? c.surface.withValues(alpha: 0.55)
+                              : null),
+                      borderRadius:
+                          BorderRadius.circular(AppTheme.railItemRadius),
+                      // 焦点态：2px 实色金环，与 hover 的半透明底明显区分。
+                      border: _focused
+                          ? Border.all(color: c.gold, width: 2)
+                          : null,
                     ),
-                    // 选中指示线：贴左边，2x14。
-                    if (selected)
-                      Positioned(
-                        left: -8,
-                        top: (AppTheme.railItemSize - 14) / 2,
-                        child: Container(
-                          width: 2,
-                          height: 14,
-                          decoration: BoxDecoration(
-                            color: c.gold,
-                            borderRadius: BorderRadius.circular(1),
-                          ),
-                        ),
-                      ),
-                    if ((widget.destination.badge ?? 0) > 0)
-                      Positioned(
-                        right: 4,
-                        top: 4,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 3,
-                            vertical: 1,
-                          ),
-                          decoration: BoxDecoration(
-                            color: c.gold,
-                            borderRadius: BorderRadius.circular(3),
-                          ),
-                          child: Text(
-                            widget.destination.badge! > 99
-                                ? '99+'
-                                : '${widget.destination.badge}',
-                            style: AppType.chip.copyWith(
-                              fontSize: 8,
-                              height: 1.1,
-                              color: c.onGold,
-                              fontWeight: FontWeight.w700,
+                    child: Stack(
+                      children: [
+                        Center(
+                          child: AnimatedScale(
+                            scale: _hover && !selected ? 1.08 : 1,
+                            duration: AppTheme.durMicro,
+                            child: Icon(
+                              widget.destination.icon,
+                              size: AppTheme.iconSm,
+                              color: iconColor,
                             ),
                           ),
                         ),
-                      ),
-                  ],
+                        // 选中指示线：贴左边，2x14。
+                        if (selected)
+                          Positioned(
+                            left: -8,
+                            top: (AppTheme.railItemSize - 14) / 2,
+                            child: Container(
+                              width: 2,
+                              height: 14,
+                              decoration: BoxDecoration(
+                                color: c.gold,
+                                borderRadius: BorderRadius.circular(1),
+                              ),
+                            ),
+                          ),
+                        if ((widget.destination.badge ?? 0) > 0)
+                          Positioned(
+                            right: 4,
+                            top: 4,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 3,
+                                vertical: 1,
+                              ),
+                              decoration: BoxDecoration(
+                                color: c.gold,
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: Text(
+                                widget.destination.badge! > 99
+                                    ? '99+'
+                                    : '${widget.destination.badge}',
+                                // 字号走 chip token（10.5），不再手写 8：
+                                // 8px 在 100% DPI 下几乎不可读，也脱离字阶。
+                                style: AppType.chip.copyWith(
+                                  height: 1.1,
+                                  color: c.onGold,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),

@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/post.dart';
+import '../../models/tag.dart';
 import '../../services/daily_feature.dart';
+import '../../services/yande_client.dart';
 import '../app_state.dart';
 import '../theme.dart';
 import '../widgets/app_route.dart';
@@ -42,6 +44,32 @@ class _FeatureViewState extends State<FeatureView> {
   DailyFeature? _feature;
   bool _loading = false;
   String? _error;
+
+  /// 标签库的进程内缓存与在途请求。
+  ///
+  /// 精选标签过滤要靠它把标签名映射到类型 / 别名（见 DailyFeature._featured）。
+  /// 标签库变化很慢，拉一次缓存整进程复用；失败降级 null，不阻塞精选。
+  static Map<String, TagDetail>? _tagLookupCache;
+  static Future<Map<String, TagDetail>?>? _tagLookupInFlight;
+
+  static Future<Map<String, TagDetail>?> _loadTagLookup(YandeClient client) {
+    final cached = _tagLookupCache;
+    if (cached != null) return Future<Map<String, TagDetail>?>.value(cached);
+    return _tagLookupInFlight ??= () async {
+      try {
+        final db = await client.fetchTagDatabase();
+        // TagDatabase.all 里每个 detail.name 与其键一致（含别名），
+        // 据此还原成 DailyFeature 需要的 name -> detail 映射。
+        final map = <String, TagDetail>{for (final t in db.all) t.name: t};
+        _tagLookupCache = map;
+        return map;
+      } catch (_) {
+        return null; // 失败降级：精选照常出，只是不过滤类型 / 别名
+      } finally {
+        _tagLookupInFlight = null;
+      }
+    }();
+  }
 
   /// 首页发来的「刷新当前页」信号（F5 / Ctrl+R）。
   ValueNotifier<int>? _refreshTick;
@@ -81,15 +109,28 @@ class _FeatureViewState extends State<FeatureView> {
     });
 
     final state = context.read<AppState>();
+    // 标签库与帖子并行拉：进程内缓存，失败降级 null，不阻塞精选装配。
+    final tagLookupFuture = _loadTagLookup(state.client);
     try {
+      // 并行拉满 5 页再按页序合并：串行最坏要等 5×12s，而各页之间
+      // 没有数据依赖。停止条件语义原样保留——只是从「不发请求」变成
+      // 「丢弃结果」：按页序扫描，遇到空页 / 已覆盖 24 小时窗口 /
+      // 已取完全站条数就停下，后面的页不再计入。
+      final pages = await Future.wait([
+        for (var page = 1; page <= _maxPages; page++)
+          state.client.downloadPosts(
+            uri: '/post.xml?tags=rating%3As&',
+            page: page,
+          ),
+      ]);
       final collected = <Post>[];
-      for (var page = 1; page <= _maxPages; page++) {
-        final result = await state.client.downloadPosts(
-          uri: '/post.xml?tags=rating%3As&',
-          page: page,
-        );
+      final seen = <int>{};
+      for (final result in pages) {
         if (result.items.isEmpty) break;
-        collected.addAll(result.items);
+        // 站点偶尔跨页重复返回，按 id 去重（与 AppState.loadMore 同策）。
+        for (final post in result.items) {
+          if (seen.add(post.id)) collected.add(post);
+        }
 
         // 已经翻到了 24 小时以外就停
         final oldest = result.items.last.createdAtUnix;
@@ -98,9 +139,14 @@ class _FeatureViewState extends State<FeatureView> {
         if (collected.length >= result.totalCount) break;
       }
 
+      // 等标签库（已并行启动；为 null 时精选照常出，只是不过滤类型 / 别名）。
+      final tagLookup = await tagLookupFuture;
       final feature = DailyFeature.build(
         collected,
-        tagBlacklist: state.settings.filter.tagBlacklist,
+        tagLookup: tagLookup,
+        // 传完整筛选：精选与搜索页共用同一套谓词。评级查询仍 rating:s，
+        // 用户关掉 safe 时这里为空是预期（空态文案会说明）。
+        filter: state.settings.filter,
       );
       if (mounted) {
         setState(() {
@@ -124,6 +170,16 @@ class _FeatureViewState extends State<FeatureView> {
         builder: (_) => PostDetailPage(post: post, heroPrefix: 'feature-'),
       ),
     );
+  }
+
+  /// 点精选标签：按该标签跳搜索页铺开帖子，而不是只开封面单帖。
+  ///
+  /// backToSearchTick 让首页切到搜索页，externalSearchRequest 把标签名
+  /// 交给搜索页同步输入框并提交（见 SearchView._onExternalSearch）。
+  void _searchTag(String tag) {
+    final state = context.read<AppState>();
+    state.backToSearchTick.value++;
+    state.externalSearchRequest.value = tag;
   }
 
   @override
@@ -160,12 +216,18 @@ class _FeatureViewState extends State<FeatureView> {
     }
 
     if (isEmpty) {
+      // 精选只取 rating:s。用户在设置里关掉 safe 时，这些帖子会被完整
+      // 筛选全部挡掉，精选为空是预期而非故障——空态文案要说清原因。
+      final safeOff = !context.read<AppState>().settings.filter.isFilterSafe;
       return StateMessageSwitcher(
         stateKey: 'empty',
         child: StateMessage(
           icon: Icons.today_outlined,
           title: '今天还没有新内容',
-          hint: '站点今天还没有人上传，过一会儿再来看看。',
+          hint: safeOff
+              ? '精选只收录 safe 分级内容，而当前设置关闭了 safe 过滤，所以这里为空。'
+                  '可在设置里重新开启 safe，或到搜索页按分级检索。'
+              : '站点今天还没有人上传，过一会儿再来看看。',
           actionLabel: '刷新',
           actionIcon: Icons.refresh,
           busy: _loading,
@@ -225,7 +287,7 @@ class _FeatureViewState extends State<FeatureView> {
                     runSpacing: AppTheme.gapM,
                     children: [
                       for (final tag in feature.featuredTags)
-                        _TagCard(tag: tag, onOpen: _open),
+                        _TagCard(tag: tag, onTap: () => _searchTag(tag.name)),
                     ],
                   ),
               ],
@@ -350,8 +412,10 @@ class _TopStripState extends State<_TopStrip> {
                           onTap: () => widget.onOpen(post),
                         ),
                       ),
+                      // 徽章放右上：PostTile 的分级圆点常驻左上角，
+                      // 两者同位会互相压住。
                       Positioned(
-                        left: AppTheme.gapS,
+                        right: AppTheme.gapS,
                         top: AppTheme.gapS,
                         child: _rankBadge(AppColor.of(context), index + 1),
                       ),
@@ -433,12 +497,13 @@ class _TopStripState extends State<_TopStrip> {
 /// 一个精选标签的卡片：封面 + 标签名 + 出现次数。
 ///
 /// 原版是 `GridView` 里一项一项排的，没做点击跳转；
-/// 这里点一下直接把该标签下的帖子铺开成新页面。
+/// 这里点一下按该标签跳搜索页，把该标签下的帖子铺开 —— 封面只是预览，
+/// 用户真正要看的是整个标签，所以回跳搜索而不是只开封面单帖。
 class _TagCard extends StatelessWidget {
-  const _TagCard({required this.tag, required this.onOpen});
+  const _TagCard({required this.tag, required this.onTap});
 
   final FeaturedTag tag;
-  final void Function(Post post) onOpen;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -452,7 +517,7 @@ class _TagCard extends StatelessWidget {
           borderRadius: BorderRadius.circular(AppTheme.cardRadius),
         ),
         child: InkWell(
-          onTap: () => onOpen(tag.cover),
+          onTap: onTap,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [

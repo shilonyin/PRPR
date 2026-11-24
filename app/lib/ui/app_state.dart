@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 
@@ -34,8 +35,10 @@ class AppState extends ChangeNotifier {
   final WallpaperEngine engine;
 
   static Future<AppState> create() async {
-    final settings = await AppSettings.load();
-    final history = await HistoryStore.load();
+    // 两份本地存储互不依赖，并行读：串行 await 会把两次磁盘 IO 的
+    // 耗时叠在启动首帧之前。
+    final (settings, history) =
+        await (AppSettings.load(), HistoryStore.load()).wait;
     final client = YandeClient(host: settings.host);
     final engine = WallpaperEngine(
       client: client,
@@ -56,7 +59,13 @@ class AppState extends ChangeNotifier {
   // ---------- 帖子列表 ----------
 
   /// 已加载的帖子（按搜索串缓存）。
-  final Map<String, List<Post>> _pages = <String, List<Post>>{};
+  ///
+  /// LRU：最多保留 10 个 query。搜索串是用户随手输入的，不设上限的话
+  /// 每个词都挂着一整页 Post，长时间使用会无限膨胀。LinkedHashMap
+  /// 保持插入序，读/写时把条目挪到队尾，逐出时取队首。
+  static const int _maxCachedQueries = 10;
+  final LinkedHashMap<String, List<Post>> _pages =
+      LinkedHashMap<String, List<Post>>();
 
   /// 各搜索串已加载到第几页。
   final Map<String, int> _loadedPage = <String, int>{};
@@ -67,9 +76,38 @@ class AppState extends ChangeNotifier {
   /// 当前搜索串。
   String _query = '';
 
+  /// 搜索请求的代程序号。每次发起新搜索 +1；旧请求回来时比对，
+  /// 过期就丢弃——快速换词时旧响应不能覆盖新结果，也不能把
+  /// 新请求的 isLoading 提前打回 false。
+  int _searchGeneration = 0;
+
   String get query => _query;
 
-  List<Post> postsFor(String query) => _pages[query] ?? const <Post>[];
+  List<Post> postsFor(String query) {
+    final posts = _pages[query];
+    if (posts == null) return const <Post>[];
+    // 读即触达：挪到队尾，让真正在用的 query 不被逐出。
+    _pages.remove(query);
+    _pages[query] = posts;
+    // 缓存存原始结果，内容筛选在读取时实时应用：设置里改分级/横竖/
+    // 黑名单立即生效，放宽筛选时被滤掉的帖子也能回来，不用重新联网。
+    final filter = settings.filter;
+    return posts.where(filter.apply).toList();
+  }
+
+  /// 写入一个 query 的缓存并执行 LRU 逐出。
+  void _putPage(String query, List<Post> posts, int loaded, int total) {
+    _pages.remove(query);
+    _pages[query] = posts;
+    _loadedPage[query] = loaded;
+    _totalCount[query] = total;
+    while (_pages.length > _maxCachedQueries) {
+      final oldest = _pages.keys.first;
+      _pages.remove(oldest);
+      _loadedPage.remove(oldest);
+      _totalCount.remove(oldest);
+    }
+  }
 
   /// 该搜索串在站点上的总条数。
   int totalFor(String query) => _totalCount[query] ?? 0;
@@ -98,8 +136,16 @@ class AppState extends ChangeNotifier {
   Future<void> search(String query, {bool force = false}) async {
     final trimmed = query.trim();
     _query = trimmed;
+    // 新搜索一律作废在途的旧请求；先收回加载态，否则旧请求被丢弃后
+    // isLoading 会永远停在 true。
+    final generation = ++_searchGeneration;
+    isLoading = false;
 
-    if (!force && _pages.containsKey(trimmed) && _pages[trimmed]!.isNotEmpty) {
+    // 缓存命中看原始数据：即使当前筛选把结果全滤掉也算命中，
+    // 否则每次切回这个搜索词都会重新联网。
+    final cached = _pages[trimmed];
+    if (!force && cached != null && cached.isNotEmpty) {
+      error = null;
       notifyListeners();
       return;
     }
@@ -120,18 +166,18 @@ class AppState extends ChangeNotifier {
           ? '/post.xml?'
           : '/post.xml?tags=${Uri.encodeQueryComponent(trimmed)}&';
       final page = await client.downloadPosts(uri: uri, page: 1);
+      if (generation != _searchGeneration) return; // 过期响应，丢弃
 
-      _pages[trimmed] = List<Post>.from(page.items);
-      _loadedPage[trimmed] = 1;
-      _totalCount[trimmed] = page.totalCount;
+      _putPage(trimmed, List<Post>.from(page.items), 1, page.totalCount);
     } catch (e) {
+      if (generation != _searchGeneration) return;
       error = describeError(e);
-      _pages[trimmed] = <Post>[];
-      _loadedPage[trimmed] = 0;
-      _totalCount[trimmed] = 0;
+      _putPage(trimmed, <Post>[], 0, 0);
     } finally {
-      isLoading = false;
-      notifyListeners();
+      if (generation == _searchGeneration) {
+        isLoading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -141,6 +187,9 @@ class AppState extends ChangeNotifier {
     final loaded = _loadedPage[query] ?? 0;
     if (!hasMoreFor(query)) return;
 
+    // 翻页不递增序号，但要记下当前代：期间若用户换了搜索词，
+    // 这一页回来时已过期，直接丢弃。
+    final generation = _searchGeneration;
     isLoading = true;
     notifyListeners();
     try {
@@ -149,18 +198,20 @@ class AppState extends ChangeNotifier {
           ? '/post.xml?'
           : '/post.xml?tags=${Uri.encodeQueryComponent(trimmed)}&';
       final page = await client.downloadPosts(uri: uri, page: loaded + 1);
+      if (generation != _searchGeneration) return;
       final existing = _pages[trimmed] ?? <Post>[];
       // 站点偶尔会重复返回，按 id 去重
       final ids = existing.map((p) => p.id).toSet();
       existing.addAll(page.items.where((p) => !ids.contains(p.id)));
-      _pages[trimmed] = existing;
-      _loadedPage[trimmed] = loaded + 1;
-      _totalCount[trimmed] = page.totalCount;
+      _putPage(trimmed, existing, loaded + 1, page.totalCount);
     } catch (e) {
+      if (generation != _searchGeneration) return;
       error = describeError(e);
     } finally {
-      isLoading = false;
-      notifyListeners();
+      if (generation == _searchGeneration) {
+        isLoading = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -190,8 +241,10 @@ class AppState extends ChangeNotifier {
     '按收藏时间',
     '按 ID 升序',
     '按 ID 降序',
-    '按分数升序',
+    // moebooru 的 order:score 是分数降序、order:score_asc 是升序，
+    // 与搜索页 _sortOptions 的「评分 ↓/↑」一致；此前这两条文案标反了。
     '按分数降序',
+    '按分数升序',
   ];
 
   int favoriteSortIndex = 0;
@@ -253,6 +306,18 @@ class AppState extends ChangeNotifier {
   /// 搜索页自己有一份 Ctrl+K，但那只在本页有焦点时有效；在设置页按 Ctrl+K
   /// 需要先切页再把光标送进去，这两步由首页发信号、搜索页接住。
   final ValueNotifier<int> focusSearchTick = ValueNotifier<int>(0);
+
+  /// 请求「回到首页并切到搜索页」。详情页面包屑回跳用：
+  /// 首页监听它执行切页，面包屑自己只负责 pop + 发信号。
+  final ValueNotifier<int> backToSearchTick = ValueNotifier<int>(0);
+
+  /// 外部页面请求「用这个词搜索」。
+  ///
+  /// 精选页标签墙、详情页面包屑点标签时把标签名写进来，搜索页监听它
+  /// 同步输入框并提交。与 backToSearchTick 分工：后者负责切页，本信号
+  /// 负责搜索词。搜索页消费后清空，保证同一标签再次点击仍能触发。
+  final ValueNotifier<String?> externalSearchRequest =
+      ValueNotifier<String?>(null);
 
   /// 换一张壁纸。[tags] 为空时用设置里的默认标签。
   Future<ChangeResult> changeWallpaper({String? tags}) async {
@@ -327,6 +392,9 @@ class AppState extends ChangeNotifier {
       client.host = settings.host;
     }
     _syncAutoChange();
+    // 设置变更（尤其是内容筛选）要传播给订阅 AppState 的页面：
+    // postsFor / 收藏列表在读取时实时过滤，页面重建后即刻生效。
+    notifyListeners();
   }
 
   @override

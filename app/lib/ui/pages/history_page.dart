@@ -4,8 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../services/history_store.dart';
+import '../../services/wallpaper_engine.dart';
+import '../../services/wallpaper_service.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import '../widgets/app_toast.dart';
 import '../widgets/app_topbar.dart';
 import '../widgets/state_message.dart';
 
@@ -49,8 +52,14 @@ class _HistoryPageState extends State<HistoryPage> {
               onPressed: () => Navigator.of(context).pop(false),
               child: const Text('取消'),
             ),
-            FilledButton(
+            // 破坏性确认统一用 danger 描边而不是金色实底：
+            // 金色是「主行动」的语言，清空历史不该长得像鼓励用户点。
+            OutlinedButton(
               onPressed: () => Navigator.of(context).pop(true),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: c.danger,
+                side: BorderSide(color: c.danger),
+              ),
               child: const Text('清空'),
             ),
           ],
@@ -65,7 +74,19 @@ class _HistoryPageState extends State<HistoryPage> {
   @override
   Widget build(BuildContext context) {
     final c = AppColor.of(context);
-    final state = context.watch<AppState>();
+    final state = context.read<AppState>();
+    // 记录只在 done 阶段前后写入：成功靠 wallpaperAppliedTick 重建，
+    // 失败记录不递增 tick，靠 done 翻转补一次。两者都比 watch 整个
+    // AppState 省——换壁纸途中的 fetching/downloading 等阶段与本页无关。
+    context.select<AppState, bool>((s) => s.currentStage == ChangeStage.done);
+
+    return ValueListenableBuilder<int>(
+      valueListenable: state.wallpaperAppliedTick,
+      builder: (context, _, _) => _buildBody(c, state),
+    );
+  }
+
+  Widget _buildBody(AppPalette c, AppState state) {
     final items = state.history.all;
 
     return Column(
@@ -162,80 +183,125 @@ class _HistoryRowState extends State<_HistoryRow> {
     );
   }
 
+  /// 点击行：把这条记录的本地裁剪图直接重设为壁纸。
+  ///
+  /// HistoryRecord 只有 postId/tags/filePath，凑不出完整 Post，走不了
+  /// AppState.applyPost；而 filePath 正是上次设壁纸用的裁剪图，直接交给
+  /// WallpaperService 就是「找回刚才那张」的最短路径，不依赖网络。
+  Future<void> _reapply() async {
+    final state = context.read<AppState>();
+    // 引擎在跑时不插队：两条管线同时写系统壁纸会互相覆盖。
+    if (state.engine.isBusy) {
+      AppToast.info(context, '上一次更换尚未完成');
+      return;
+    }
+    final record = widget.record;
+    if (record.filePath.isEmpty || !await File(record.filePath).exists()) {
+      if (mounted) AppToast.error(context, '本地图片已不存在，无法重设');
+      return;
+    }
+    final result = await WallpaperService().setWallpaperAsync(
+      record.filePath,
+      fitMode: state.settings.fitMode,
+    );
+    if (!mounted) return;
+    if (result.isSuccess) {
+      // 不新增历史记录：这是「重设」不是「换一张」，列表不该多出一行。
+      state.wallpaperAppliedTick.value++;
+      AppToast.neutral(context, '已重设为壁纸：#${record.postId}');
+    } else {
+      AppToast.error(context, '重设失败：${result.message}');
+    }
+  }
+
   Widget _buildRow(AppPalette c) {
     final record = widget.record;
     final time = record.appliedAt;
 
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: AnimatedContainer(
-        duration: AppTheme.durFast,
-        color: _hover ? c.panel : Colors.transparent,
-        padding: const EdgeInsets.symmetric(vertical: 11),
-        child: Row(
-          children: [
-            Container(
-              width: _HistoryPageState._thumbSize,
-              height: _HistoryPageState._thumbSize,
-              decoration: BoxDecoration(
-                color: c.surface,
-                borderRadius: BorderRadius.circular(AppTheme.imageRadius),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: Image.file(
-                File(record.filePath),
-                fit: BoxFit.cover,
-                // 用户可能手动删掉了下载目录，这里必须容错
-                errorBuilder: (context, _, _) => Icon(
-                  Icons.image_outlined,
-                  size: AppTheme.iconXs,
-                  color: c.inkFaint,
-                ),
-              ),
-            ),
-            const SizedBox(width: AppTheme.gapM),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    record.tags.isEmpty ? '#${record.postId}' : record.tags,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: AppType.body.copyWith(color: c.ink),
+    return Tooltip(
+      message: '点击重设为壁纸',
+      waitDuration: const Duration(milliseconds: 420),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: InkWell(
+          onTap: _reapply,
+          child: AnimatedContainer(
+            duration: AppTheme.durFast,
+            color: _hover ? c.panel : Colors.transparent,
+            padding: const EdgeInsets.symmetric(vertical: 11),
+            child: Row(
+              children: [
+                Container(
+                  width: _HistoryPageState._thumbSize,
+                  height: _HistoryPageState._thumbSize,
+                  decoration: BoxDecoration(
+                    color: c.surface,
+                    borderRadius: BorderRadius.circular(AppTheme.imageRadius),
                   ),
-                  const SizedBox(height: 3),
-                  Row(
+                  clipBehavior: Clip.antiAlias,
+                  child: Image.file(
+                    File(record.filePath),
+                    fit: BoxFit.cover,
+                    // filePath 是屏幕分辨率的裁剪 PNG，全尺寸解码一张
+                    // 4K RGBA 约 33MB，十行可见就撑爆 imageCache。
+                    // 按显示尺寸 × DPR 解码，40px 缩略图只花几十 KB。
+                    cacheWidth: (_HistoryPageState._thumbSize *
+                            MediaQuery.devicePixelRatioOf(context))
+                        .round(),
+                    // 用户可能手动删掉了下载目录，这里必须容错
+                    errorBuilder: (context, _, _) => Icon(
+                      Icons.image_outlined,
+                      size: AppTheme.iconXs,
+                      color: c.inkFaint,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: AppTheme.gapM),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        _stamp(time),
-                        style: AppType.monoData.copyWith(color: c.inkFaint),
+                        record.tags.isEmpty ? '#${record.postId}' : record.tags,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppType.body.copyWith(color: c.ink),
                       ),
-                      const SizedBox(width: AppTheme.gapM),
-                      Text(
-                        '#${record.postId}',
-                        style: AppType.monoData.copyWith(color: c.inkFaint),
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          Text(
+                            _stamp(time),
+                            style: AppType.monoData.copyWith(color: c.inkFaint),
+                          ),
+                          const SizedBox(width: AppTheme.gapM),
+                          Text(
+                            '#${record.postId}',
+                            style: AppType.monoData.copyWith(color: c.inkFaint),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                ],
-              ),
+                ),
+                const SizedBox(width: AppTheme.gapM),
+                if (!record.success)
+                  Text(
+                    '失败',
+                    style: AppType.monoData.copyWith(color: c.danger),
+                  )
+                else
+                  Icon(
+                    Icons.check,
+                    size: AppTheme.iconXs,
+                    color: c.safe.withValues(alpha: 0.8),
+                  ),
+              ],
             ),
-            const SizedBox(width: AppTheme.gapM),
-            if (!record.success)
-              Text(
-                '失败',
-                style: AppType.monoData.copyWith(color: c.danger),
-              )
-            else
-              Icon(
-                Icons.check,
-                size: AppTheme.iconXs,
-                color: c.safe.withValues(alpha: 0.8),
-              ),
-          ],
+          ),
         ),
       ),
     );

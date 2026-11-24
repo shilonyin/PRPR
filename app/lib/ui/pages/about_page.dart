@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../../services/app_settings.dart';
@@ -89,6 +92,7 @@ class AboutPage extends StatelessWidget {
                         const SizedBox(height: AppTheme.gapXl),
                         _rule(c),
                         const SizedBox(height: AppTheme.gapM),
+                        _dataDirRow(context, c),
                         _licenseRow(context, c),
                       ],
                     ),
@@ -175,6 +179,50 @@ class AboutPage extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      );
+
+  /// 「打开数据目录」：换壁纸下载的图片就存在这里，用户迟早会想找到它们。
+  /// 复用开源许可行的版式（图标 + 主副标题 + 右箭头），保持两个入口一致。
+  Widget _dataDirRow(BuildContext context, AppPalette c) => InkWell(
+        borderRadius: BorderRadius.circular(AppTheme.buttonRadius),
+        onTap: () async {
+          try {
+            final dir = await getApplicationSupportDirectory();
+            await Process.run('explorer.exe', [dir.path]);
+          } catch (e) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('打开数据目录失败：$e')),
+              );
+            }
+          }
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: AppTheme.gapM),
+          child: Row(
+            children: [
+              Icon(Icons.folder_outlined, size: AppTheme.iconSm, color: c.inkDim),
+              const SizedBox(width: AppTheme.gapM),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '打开数据目录',
+                      style: AppType.body.copyWith(color: c.ink),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '壁纸图片与本地数据存放的位置',
+                      style: AppType.caption.copyWith(color: c.inkFaint),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, size: AppTheme.iconSm, color: c.inkFaint),
+            ],
+          ),
         ),
       );
 

@@ -47,11 +47,28 @@ class _SearchViewState extends State<SearchView> {
   /// 首页发来的「刷新当前页」信号。
   ValueNotifier<int>? _refreshTick;
 
+  /// 外部页面（精选标签墙 / 详情页面包屑）发来的「用这个词搜索」信号。
+  ValueNotifier<String?>? _externalSearch;
+
   /// 历史搜索词，仅存活于本次运行。
   final List<String> _recent = <String>[];
 
   /// 排序菜单展开状态（点空白关掉）。
   bool _sortOpen = false;
+
+  /// 排序选项：order: 标签 → 显示名。空串 = 默认（不带 order:）。
+  /// order: 计入站点的 6 标签上限，追加前要先数一遍（见 _applySort）。
+  static const Map<String, String> _sortOptions = <String, String>{
+    '': '默认',
+    'order:score': '评分 ↓',
+    'order:score_asc': '评分 ↑',
+    'order:id': 'ID ↓',
+    'order:id_asc': 'ID ↑',
+  };
+
+  /// 输入框焦点状态。用 ValueNotifier 局部化而不是整页 setState：
+  /// 焦点变化只影响搜索图标颜色和最近搜索条，不该拖着 PostGrid 重建。
+  final ValueNotifier<bool> _inputFocused = ValueNotifier<bool>(false);
 
   /// 三档密度：紧凑 5、标准 4、舒展 3。
   ///
@@ -63,6 +80,9 @@ class _SearchViewState extends State<SearchView> {
   @override
   void initState() {
     super.initState();
+    // _RecentBar 的可见性读 hasFocus，但焦点变化不会自己触发 build，
+    // 必须显式监听，否则失焦后最近搜索条一直挂着。
+    _focusNode.addListener(_syncInputFocus);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (widget.initialQuery.isEmpty) {
         _submit(''); // 首屏直接拉最新
@@ -84,15 +104,27 @@ class _SearchViewState extends State<SearchView> {
       _refreshTick?.removeListener(_refresh);
       _refreshTick = state.refreshTick..addListener(_refresh);
     }
+    if (!identical(_externalSearch, state.externalSearchRequest)) {
+      _externalSearch?.removeListener(_onExternalSearch);
+      _externalSearch = state.externalSearchRequest
+        ..addListener(_onExternalSearch);
+    }
   }
 
   @override
   void dispose() {
     _focusTick?.removeListener(_takeFocus);
     _refreshTick?.removeListener(_refresh);
+    _externalSearch?.removeListener(_onExternalSearch);
+    _focusNode.removeListener(_syncInputFocus);
+    _inputFocused.dispose();
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _syncInputFocus() {
+    _inputFocused.value = _focusNode.hasFocus;
   }
 
   void _takeFocus() {
@@ -111,6 +143,22 @@ class _SearchViewState extends State<SearchView> {
     state.search(state.query, force: true);
   }
 
+  /// 接住外部页面的搜索请求：同步输入框并提交。
+  ///
+  /// 与 _refresh 不同，这里不检查 currentTab —— 外部请求是明确的「搜这个词」，
+  /// 切页由 backToSearchTick 另行负责。消费后把信号清空，保证同一标签
+  /// 再次点击时 ValueNotifier 仍会通知（值相同不再触发）。
+  void _onExternalSearch() {
+    if (!mounted) return;
+    final state = context.read<AppState>();
+    final query = state.externalSearchRequest.value;
+    if (query == null) return;
+    state.externalSearchRequest.value = null;
+    _controller.text = query;
+    _controller.selection = TextSelection.collapsed(offset: query.length);
+    _submit(query);
+  }
+
   Future<void> _submit(String query) async {
     final state = context.read<AppState>();
     final trimmed = query.trim();
@@ -123,6 +171,34 @@ class _SearchViewState extends State<SearchView> {
     if (!mounted) return;
     final error = state.error;
     if (error != null) AppToast.error(context, error);
+  }
+
+  /// 当前生效的 order: 标签（空串 = 默认排序）。
+  static String _currentOrder(String query) => query
+      .split(' ')
+      .firstWhere((t) => t.startsWith('order:'), orElse: () => '');
+
+  /// 选排序 = 替换/追加 query 里的 order: 标签再重查。
+  ///
+  /// order: 计入站点 6 标签上限：替换已有 order: 不改变标签数，
+  /// 但给已满 6 个标签的 query 追加一个会被站点拒绝，先挡下并提示。
+  void _applySort(String order) {
+    setState(() => _sortOpen = false);
+    final state = context.read<AppState>();
+    final tokens = state.query
+        .split(' ')
+        .where((t) => t.isNotEmpty && !t.startsWith('order:'))
+        .toList();
+    if (order.isNotEmpty) tokens.add(order);
+    if (tokens.length > 6) {
+      AppToast.info(context, '最多支持 6 个标签，排序（order:）也占一个');
+      return;
+    }
+    final newQuery = tokens.join(' ');
+    // 输入框同步显示新 query：排序是 query 的一部分，不能只改结果不改串。
+    _controller.text = newQuery;
+    _controller.selection = TextSelection.collapsed(offset: newQuery.length);
+    _submit(newQuery); // 内部走 AppState.search(force: true)
   }
 
   void _reuseRecent(String query) {
@@ -169,10 +245,13 @@ class _SearchViewState extends State<SearchView> {
               _buildTopBar(context, state),
               // 最近搜索不占常驻空间：它只在输入框拿到焦点时从顶栏下面
               // 滑出一行。没有焦点时这里什么也没有，画廊直接顶到顶栏下沿。
-              _RecentBar(
-                visible: _focusNode.hasFocus && _recent.isNotEmpty,
-                items: _recent,
-                onPick: _reuseRecent,
+              ValueListenableBuilder<bool>(
+                valueListenable: _inputFocused,
+                builder: (context, focused, _) => _RecentBar(
+                  visible: focused && _recent.isNotEmpty,
+                  items: _recent,
+                  onPick: _reuseRecent,
+                ),
               ),
               Expanded(
                 child: PostGrid(
@@ -203,17 +282,21 @@ class _SearchViewState extends State<SearchView> {
   Widget _buildTopBar(BuildContext context, AppState state) {
     final c = AppColor.of(context);
     final loading = state.isLoading;
-    final total = state.totalFor(state.query);
+    // 计数显示筛选后的实际条数，而不是站点总数（分页仍按站点总数判断）。
+    final total = state.postsFor(state.query).length;
 
     return AppTopBar(
       height: AppTheme.topbarHeightSearch,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Icon(
-            Icons.search,
-            size: 17,
-            color: _focusNode.hasFocus ? c.gold : c.inkFaint,
+          ValueListenableBuilder<bool>(
+            valueListenable: _inputFocused,
+            builder: (context, focused, _) => Icon(
+              Icons.search,
+              size: 17,
+              color: focused ? c.gold : c.inkFaint,
+            ),
           ),
           const SizedBox(width: AppTheme.gapM + 2),
           Expanded(
@@ -223,11 +306,13 @@ class _SearchViewState extends State<SearchView> {
               children: [
                 SizedBox(
                   height: 22,
+                  // 不在 onChanged 里整页 setState：页面没有任何部分逐键
+                  // 读输入文本，TextField 自己渲染自己；整页重建只会拖着
+                  // PostGrid 白重建几十次。焦点态走 _inputFocused 局部刷新。
                   child: TextField(
                     controller: _controller,
                     focusNode: _focusNode,
                     onSubmitted: _submit,
-                    onChanged: (_) => setState(() {}),
                     textInputAction: TextInputAction.search,
                     cursorColor: c.gold,
                     cursorWidth: 1.6,
@@ -245,10 +330,12 @@ class _SearchViewState extends State<SearchView> {
                       focusedBorder: InputBorder.none,
                       contentPadding: EdgeInsets.zero,
                       hintText: 'landscape  sky  rating:s',
+                      // 占位符用实色 inkFaint：再叠 0.55 透明度只剩约
+                      // 1.9:1 对比度，深色底上基本看不见。
                       hintStyle: AppType.title.copyWith(
                         fontSize: 16,
                         height: 1.2,
-                        color: c.inkFaint.withValues(alpha: 0.55),
+                        color: c.inkFaint,
                       ),
                     ),
                   ),
@@ -267,12 +354,12 @@ class _SearchViewState extends State<SearchView> {
           ],
           _SortMenu(
             open: _sortOpen,
-            label: '评分 ↓',
+            // 入口 label 反映当前生效的排序，而不是恒为「评分 ↓」。
+            label: _sortOptions[_currentOrder(state.query)] ??
+                _currentOrder(state.query),
+            current: _currentOrder(state.query),
             onTap: () => setState(() => _sortOpen = !_sortOpen),
-            onPick: (v) {
-              setState(() => _sortOpen = false);
-              AppToast.info(context, '排序：$v');
-            },
+            onPick: _applySort,
           ),
           const SizedBox(width: AppTheme.gapM),
           _DensityButton(
@@ -326,7 +413,7 @@ class _SearchViewState extends State<SearchView> {
 
 /// 输入框下面那行 11px 的语法提示。
 ///
-/// 换了内容而不是消失：平时教语法（`支持 ratings / score>50 / tag`），
+/// 换了内容而不是消失：平时教语法（`支持 rating:s / score:>50 / tag`），
 /// 加载时变成阶段文案。常驻一行说明比一个只在出错时出现的 tooltip 有用——
 /// 这套标签语法是新用户唯一的学习门槛。
 class _SyntaxHint extends StatelessWidget {
@@ -343,7 +430,7 @@ class _SyntaxHint extends StatelessWidget {
       child: Text(
         loading
             ? '正在获取…'
-            : 'Ctrl+K 聚焦 · 支持 ratings / score>50 / tag / -tag 排除',
+            : 'Ctrl+K 聚焦 · 支持 rating:s / score:>50 / tag / -tag 排除',
         key: ValueKey<bool>(loading),
         style: AppType.caption.copyWith(color: c.inkFaint),
         maxLines: 1,
@@ -402,19 +489,25 @@ class _CountReadout extends StatelessWidget {
   }
 }
 
-/// 排序入口。当前只有一个「评分 ↓」，所以点开的是一个说明性菜单，
-/// 而不是一个假装有很多选项的下拉。
+/// 排序入口。选项一一对应 order: 标签，选中即替换/追加该标签重查；
+/// 入口 label 永远反映当前排序。此前这里只弹一条 Toast，是个假下拉。
 class _SortMenu extends StatelessWidget {
   const _SortMenu({
     required this.open,
     required this.label,
+    required this.current,
     required this.onTap,
     required this.onPick,
   });
 
   final bool open;
   final String label;
+
+  /// 当前生效的 order: 标签（空串 = 默认），用于高亮菜单里的当前项。
+  final String current;
   final VoidCallback onTap;
+
+  /// 回传 order: 标签本身；空串表示去掉排序回默认。
   final ValueChanged<String> onPick;
 
   @override
@@ -443,17 +536,19 @@ class _SortMenu extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                for (final v in const ['评分', '日期', '随机'])
+                for (final entry in _SearchViewState._sortOptions.entries)
                   InkWell(
-                    onTap: () => onPick('$v ↓'),
+                    onTap: () => onPick(entry.key),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
                         horizontal: AppTheme.gapS,
                         vertical: 2,
                       ),
                       child: Text(
-                        v,
-                        style: AppType.caption.copyWith(color: c.inkDim),
+                        entry.value,
+                        style: AppType.caption.copyWith(
+                          color: entry.key == current ? c.goldText : c.inkDim,
+                        ),
                       ),
                     ),
                   ),
@@ -493,25 +588,32 @@ class _ChipTapState extends State<_ChipTap> {
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
         onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: AppTheme.durFast,
-          height: 26,
-          padding: const EdgeInsets.symmetric(horizontal: 9),
-          decoration: BoxDecoration(
-            color: widget.open || _hover ? c.surface : Colors.transparent,
-            border: Border.all(color: c.line),
-            borderRadius: BorderRadius.circular(AppTheme.chipRadius),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                widget.label,
-                style: AppType.monoData.copyWith(color: c.inkDim),
+        behavior: HitTestBehavior.opaque,
+        // 视觉保持 26 高，命中区扩到 32：触控板/触摸屏上 26px 太难点中。
+        child: SizedBox(
+          height: 32,
+          child: Center(
+            child: AnimatedContainer(
+              duration: AppTheme.durFast,
+              height: 26,
+              padding: const EdgeInsets.symmetric(horizontal: 9),
+              decoration: BoxDecoration(
+                color: widget.open || _hover ? c.surface : Colors.transparent,
+                border: Border.all(color: c.line),
+                borderRadius: BorderRadius.circular(AppTheme.chipRadius),
               ),
-              const SizedBox(width: 4),
-              Icon(Icons.arrow_drop_down, size: 13, color: c.inkFaint),
-            ],
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    widget.label,
+                    style: AppType.monoData.copyWith(color: c.inkDim),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(Icons.arrow_drop_down, size: 13, color: c.inkFaint),
+                ],
+              ),
+            ),
           ),
         ),
       ),
@@ -536,9 +638,10 @@ class _DensityButton extends StatelessWidget {
         child: GestureDetector(
           onTap: onTap,
           behavior: HitTestBehavior.opaque,
+          // 命中区 32×32（图形仍是 13×13 居中）：小按钮更要给够点击余量。
           child: SizedBox(
-            width: 26,
-            height: 26,
+            width: 32,
+            height: 32,
             child: Center(
               child: SizedBox(
                 width: 13,
@@ -610,18 +713,27 @@ class _RecentBar extends StatelessWidget {
                       cursor: SystemMouseCursors.click,
                       child: GestureDetector(
                         onTap: () => onPick(q),
-                        child: Container(
-                          height: 24,
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: c.line),
-                            borderRadius:
-                                BorderRadius.circular(AppTheme.chipRadius),
-                          ),
+                        behavior: HitTestBehavior.opaque,
+                        // 视觉 24 高不变，命中区扩到 32，理由同 _ChipTap。
+                        child: SizedBox(
+                          height: 32,
                           child: Center(
-                            child: Text(
-                              q.isEmpty ? '(空)' : q,
-                              style: AppType.chip.copyWith(color: c.inkDim),
+                            child: Container(
+                              height: 24,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 8),
+                              decoration: BoxDecoration(
+                                border: Border.all(color: c.line),
+                                borderRadius: BorderRadius.circular(
+                                    AppTheme.chipRadius),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  q.isEmpty ? '(空)' : q,
+                                  style:
+                                      AppType.chip.copyWith(color: c.inkDim),
+                                ),
+                              ),
                             ),
                           ),
                         ),

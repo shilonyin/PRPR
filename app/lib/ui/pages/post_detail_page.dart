@@ -49,6 +49,10 @@ class _PostDetailPageState extends State<PostDetailPage> {
   /// 收藏成功的回弹计数。每次收藏成功加一，让 TweenAnimationBuilder 重播。
   int _favBounce = 0;
 
+  /// 放大超阈值时只提示一次「可切原图」，不自动切：
+  /// 自动下载原图会在用户只是想凑近看看时突然卡一下。
+  bool _zoomHintShown = false;
+
   /// 左画布的底色。比 bg 再暗一档，把图片从页面里「托」出来。
 
   @override
@@ -63,17 +67,27 @@ class _PostDetailPageState extends State<PostDetailPage> {
   @override
   void dispose() {
     _flashTimer?.cancel();
+    // 退页即逐出当前大图的内存缓存：详情页的大图动辄几十 MB，
+    // 留着会把瀑布流缩略图挤出去；preview 与瓦片共享，不动它。
+    if (_version != PostImageVersion.preview) {
+      final url = post.urlFor(_version);
+      if (url.isNotEmpty) CachedNetworkImage.evictFromCache(url);
+    }
     super.dispose();
   }
 
   Post get post => widget.post;
 
-  /// 默认优先看原图；没有原图就退到 jpeg / sample。
+  /// 默认优先 jpeg / sample，原图留给用户在画质分段里手动切换。
+  ///
+  /// 为什么不再默认 source：4000×6000 的原图解码约 96MB，几乎吃满
+  /// imageCache，会把瀑布流缩略图批量逐出；而详情页画布通常只有
+  /// 一千多像素宽，jpeg/sample 的清晰度已经足够首屏。
   PostImageVersion _initialVersion() {
     for (final v in const [
-      PostImageVersion.source,
       PostImageVersion.jpeg,
       PostImageVersion.sample,
+      PostImageVersion.source,
       PostImageVersion.preview,
     ]) {
       if (post.urlFor(v).isNotEmpty) return v;
@@ -258,23 +272,20 @@ class _PostDetailPageState extends State<PostDetailPage> {
               child: AppBreadcrumb(
                 parts: ['搜索', ...tags.take(2)],
                 onTap: (index) {
-                  final crumbs = ['搜索', ...tags.take(2)];
-                  final part = crumbs[index];
-                  Clipboard.setData(ClipboardData(text: part));
-                  _flash('crumb-$part');
+                  // 面包屑的契约是「点某一段回跳」（见 AppBreadcrumb），
+                  // 不是复制。第 0 段是「搜索」：回搜索页默认；其余段是对应
+                  // 标签，把该标签作为搜索词回跳（标签复制走下面的 chip）。
+                  final state = context.read<AppState>();
+                  if (index > 0 && index - 1 < tags.length) {
+                    state.externalSearchRequest.value = tags[index - 1];
+                  }
+                  Navigator.of(context).maybePop();
+                  state.backToSearchTick.value++;
                 },
               ),
             )
           else
             const Spacer(),
-          if (_flashKey != null && _flashKey!.startsWith('crumb-'))
-            Padding(
-              padding: const EdgeInsets.only(right: AppTheme.gapS),
-              child: Text(
-                '已复制',
-                style: AppType.kicker.copyWith(color: c.safe),
-              ),
-            ),
           IconButton(
             tooltip: '关闭（Esc）',
             onPressed: () => Navigator.of(context).maybePop(),
@@ -316,67 +327,93 @@ class _PostDetailPageState extends State<PostDetailPage> {
         child: Center(
           child: AspectRatio(
             aspectRatio: ratio,
-            child: Hero(
-              tag: '${widget.heroPrefix}${post.id}',
-              flightShuttleBuilder: (
-                flightContext,
-                animation,
-                direction,
-                fromContext,
-                toContext,
-              ) =>
-                  heroFlightShuttle(
-                flightContext,
-                animation,
-                direction,
-                fromContext,
-                toContext,
-                previewUrl.isEmpty ? url : previewUrl,
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(AppTheme.imageRadius),
-                child: InteractiveViewer(
-                  minScale: 0.5,
-                  maxScale: 6,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      // 预览图铺底：cover 到同一个框，和瓦片看到的裁切一致。
-                      if (previewUrl.isNotEmpty && previewUrl != url)
-                        CachedNetworkImage(
-                          imageUrl: previewUrl,
-                          fit: BoxFit.cover,
-                          fadeInDuration: AppTheme.durFast,
-                          errorWidget: (context, _, _) =>
-                              ColoredBox(color: c.surface),
-                        ),
-                      AnimatedSwitcher(
-                        duration: AppTheme.durSlow,
-                        switchInCurve: AppTheme.curveIn,
-                        switchOutCurve: AppTheme.curveOut,
-                        // 旧帧留在 Stack 里淡出，新帧淡入，中间不会露出底色。
-                        child: CachedNetworkImage(
-                          key: ValueKey<String>(url),
-                          imageUrl: url,
-                          fit: BoxFit.cover,
-                          fadeInDuration: AppTheme.durMed,
-                          fadeInCurve: AppTheme.curveIn,
-                          // 底层已有预览图，这里不再转圈，否则圈会盖在图上。
-                          placeholder: (context, _) => const SizedBox.shrink(),
-                          errorWidget: (context, _, _) => Center(
-                            child: Text(
-                              '图片加载失败',
-                              style: AppType.caption.copyWith(
-                                color: c.inkDim,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // 按画布物理宽解码（逻辑宽 × DPR），封顶 4096：
+                // 4000×6000 的 jpeg 全解码约 96MB，而画布只有一千多
+                // 像素宽，限宽解码把内存降一个数量级且肉眼无损。
+                // source 档不限——用户明确切到原图，就是要那份像素。
+                final dpr = MediaQuery.devicePixelRatioOf(context);
+                final memCacheWidth = _version == PostImageVersion.source
+                    ? null
+                    : (constraints.maxWidth * dpr).round().clamp(1, 4096);
+                return Hero(
+                  tag: '${widget.heroPrefix}${post.id}',
+                  flightShuttleBuilder: (
+                    flightContext,
+                    animation,
+                    direction,
+                    fromContext,
+                    toContext,
+                  ) =>
+                      heroFlightShuttle(
+                    flightContext,
+                    animation,
+                    direction,
+                    fromContext,
+                    toContext,
+                    previewUrl.isEmpty ? url : previewUrl,
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(AppTheme.imageRadius),
+                    child: InteractiveViewer(
+                      minScale: 0.5,
+                      maxScale: 6,
+                      onInteractionUpdate: (details) {
+                        // 放大到 2.5 倍以上时限宽解码的图开始发虚：
+                        // 提示一次可切原图，不自动切——避免用户只是想
+                        // 凑近看看时突然触发几十 MB 的下载解码。
+                        if (!_zoomHintShown &&
+                            details.scale > 2.5 &&
+                            _version != PostImageVersion.source &&
+                            post.urlFor(PostImageVersion.source).isNotEmpty) {
+                          _zoomHintShown = true;
+                          AppToast.info(context, '已放大：切到「原图」画质可看细节');
+                        }
+                      },
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          // 预览图铺底：cover 到同一个框，和瓦片看到的裁切一致。
+                          if (previewUrl.isNotEmpty && previewUrl != url)
+                            CachedNetworkImage(
+                              imageUrl: previewUrl,
+                              fit: BoxFit.cover,
+                              fadeInDuration: AppTheme.durFast,
+                              errorWidget: (context, _, _) =>
+                                  ColoredBox(color: c.surface),
+                            ),
+                          AnimatedSwitcher(
+                            duration: AppTheme.durSlow,
+                            switchInCurve: AppTheme.curveIn,
+                            switchOutCurve: AppTheme.curveOut,
+                            // 旧帧留在 Stack 里淡出，新帧淡入，中间不会露出底色。
+                            child: CachedNetworkImage(
+                              key: ValueKey<String>(url),
+                              imageUrl: url,
+                              fit: BoxFit.cover,
+                              memCacheWidth: memCacheWidth,
+                              fadeInDuration: AppTheme.durMed,
+                              fadeInCurve: AppTheme.curveIn,
+                              // 底层已有预览图，这里不再转圈，否则圈会盖在图上。
+                              placeholder: (context, _) =>
+                                  const SizedBox.shrink(),
+                              errorWidget: (context, _, _) => Center(
+                                child: Text(
+                                  '图片加载失败',
+                                  style: AppType.caption.copyWith(
+                                    color: c.inkDim,
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ),
         ),
@@ -521,24 +558,32 @@ class _PostDetailPageState extends State<PostDetailPage> {
   Widget _applyButton(AppPalette c) {
     return SizedBox(
       height: 42,
-      child: FilledButton.icon(
-        onPressed: _busy ? null : _applyAsWallpaper,
-        // 只换左侧图标、不换文案：文案一变按钮就跳宽，鼠标还没来得及抬起来
-        // 目标已经移走了。
-        icon: _applying
-            ? const SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.wallpaper_outlined, size: AppTheme.iconSm),
-        label: Text(
-          _applying ? '正在设置…' : '设为壁纸',
-          style: AppType.body.copyWith(
-            color: c.onGold,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+      child: Builder(
+        builder: (context) {
+          // 只订阅「全局壁纸任务是否在跑」：自动换壁纸进行中时禁用，
+          // 避免两条管线抢同一张系统壁纸；阶段推进只重建这颗按钮。
+          final globalBusy =
+              context.select<AppState, bool>((s) => s.currentStage != null);
+          return FilledButton.icon(
+            onPressed: (_busy || globalBusy) ? null : _applyAsWallpaper,
+            // 只换左侧图标、不换文案：文案一变按钮就跳宽，鼠标还没来得及抬起来
+            // 目标已经移走了。
+            icon: _applying
+                ? const SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.wallpaper_outlined, size: AppTheme.iconSm),
+            label: Text(
+              _applying ? '正在设置…' : '设为壁纸',
+              style: AppType.body.copyWith(
+                color: c.onGold,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -739,24 +784,28 @@ class _PostDetailPageState extends State<PostDetailPage> {
 
   Widget _tagChip(AppPalette c, String tag) {
     final flashed = _flashKey == 'tag-$tag';
-    return InkWell(
-      onTap: () {
-        Clipboard.setData(ClipboardData(text: tag));
-        _flash('tag-$tag');
-      },
-      borderRadius: BorderRadius.circular(AppTheme.chipRadius),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(
-          color: flashed ? c.safe.withValues(alpha: 0.12) : c.surface,
-          borderRadius: BorderRadius.circular(AppTheme.chipRadius),
-          border: Border.all(
-            color: flashed ? c.safe.withValues(alpha: 0.4) : c.line,
+    return Tooltip(
+      message: '点击复制',
+      waitDuration: const Duration(milliseconds: 420),
+      child: InkWell(
+        onTap: () {
+          Clipboard.setData(ClipboardData(text: tag));
+          _flash('tag-$tag');
+        },
+        borderRadius: BorderRadius.circular(AppTheme.chipRadius),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: flashed ? c.safe.withValues(alpha: 0.12) : c.surface,
+            borderRadius: BorderRadius.circular(AppTheme.chipRadius),
+            border: Border.all(
+              color: flashed ? c.safe.withValues(alpha: 0.4) : c.line,
+            ),
           ),
-        ),
-        child: Text(
-          tag,
-          style: AppType.chip.copyWith(color: flashed ? c.safe : c.inkDim),
+          child: Text(
+            tag,
+            style: AppType.chip.copyWith(color: flashed ? c.safe : c.inkDim),
+          ),
         ),
       ),
     );

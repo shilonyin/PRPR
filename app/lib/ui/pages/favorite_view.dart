@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/post.dart';
+import '../../models/post_filter.dart';
 import '../app_state.dart';
 import '../theme.dart';
 import '../widgets/app_route.dart';
@@ -82,11 +83,22 @@ class _FavoriteViewState extends State<FavoriteView> {
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-    final settings = state.settings;
+    // 只订阅本页真正读的字段：watch<AppState> 会让换壁纸的每次
+    // stage 通知都重建收藏页，而收藏页根本不关心壁纸进度。
+    final isLoggedIn =
+        context.select<AppState, bool>((s) => s.settings.isLoggedIn);
+    final loadingFavs =
+        context.select<AppState, bool>((s) => s.isLoadingFavorites);
+    final rawPosts =
+        context.select<AppState, List<Post>>((s) => s.favoritePosts);
+    // 收藏同样过内容筛选；filter 实例有缓存，identity 稳定，
+    // 只有筛选真正变化时才触发重建。
+    final filter =
+        context.select<AppState, PostFilter>((s) => s.settings.filter);
+    final posts = rawPosts.where(filter.apply).toList();
     final c = AppColor.of(context);
 
-    if (!settings.isLoggedIn) {
+    if (!isLoggedIn) {
       return Column(
         children: [
           _topBar(c, count: 0, sortable: false),
@@ -124,26 +136,26 @@ class _FavoriteViewState extends State<FavoriteView> {
 
     // 首次加载（还没有任何数据）才铺骨架；重新加载保留列表只做淡化，
     // 这样连续点排序不会让整页反复变成空白。
-    final firstLoad = state.isLoadingFavorites && state.favoritePosts.isEmpty;
+    final firstLoad = loadingFavs && posts.isEmpty;
     if (firstLoad) return const SkeletonGrid();
 
     return Column(
       children: [
         _topBar(
           c,
-          count: state.favoritePosts.length,
+          count: posts.length,
           sortable: true,
-          refreshing: state.isLoadingFavorites,
+          refreshing: loadingFavs,
         ),
         Expanded(
           child: Stack(
             children: [
               AnimatedOpacity(
-                opacity: _switchingSort || state.isLoadingFavorites ? 0.55 : 1,
+                opacity: _switchingSort || loadingFavs ? 0.55 : 1,
                 duration: AppTheme.durFast,
                 curve: AppTheme.curveIn,
                 child: PostGrid(
-                  posts: state.favoritePosts,
+                  posts: posts,
                   heroPrefix: 'fav-',
                   emptyText: '还没有收藏任何图片',
                   onOpen: _open,
@@ -157,13 +169,13 @@ class _FavoriteViewState extends State<FavoriteView> {
                 top: 0,
                 child: IgnorePointer(
                   child: AnimatedOpacity(
-                    opacity: _switchingSort || state.isLoadingFavorites ? 1 : 0,
+                    opacity: _switchingSort || loadingFavs ? 1 : 0,
                     duration: AppTheme.durFast,
                     curve: AppTheme.curveIn,
                     // 见 post_grid.dart 里同一处注释：无限动画的 ticker 不会
                     // 因为外层的 AnimatedOpacity 变成 0 就停下，必须显式禁用。
                     child: TickerMode(
-                      enabled: _switchingSort || state.isLoadingFavorites,
+                      enabled: _switchingSort || loadingFavs,
                       child: const LinearProgressIndicator(minHeight: 2),
                     ),
                   ),
@@ -187,7 +199,8 @@ class _FavoriteViewState extends State<FavoriteView> {
     required bool sortable,
     bool refreshing = false,
   }) {
-    final state = context.watch<AppState>();
+    final sortIndex =
+        context.select<AppState, int>((s) => s.favoriteSortIndex);
     return AppTopBar(
       child: Row(
         children: [
@@ -198,7 +211,7 @@ class _FavoriteViewState extends State<FavoriteView> {
           if (sortable) ...[
             DropdownButtonHideUnderline(
               child: DropdownButton<int>(
-                value: state.favoriteSortIndex,
+                value: sortIndex,
                 isDense: true,
                 dropdownColor: c.surface,
                 borderRadius: BorderRadius.circular(AppTheme.inputRadius),
@@ -216,7 +229,7 @@ class _FavoriteViewState extends State<FavoriteView> {
                     ),
                 ],
                 onChanged: (value) async {
-                  if (value == null || value == state.favoriteSortIndex) {
+                  if (value == null || value == sortIndex) {
                     return;
                   }
                   await _changeSort(value);

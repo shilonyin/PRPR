@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -37,40 +38,44 @@ class AnimeFaceDetector {
   AnimeFaceDetector();
 
   String? _cascadePath;
-  bool _materializing = false;
+
+  /// 正在落盘时共享的 Completer：并发调用都 await 同一个 Future，
+  /// 取代原先 50ms×100 的轮询——轮询既可能空等满 5 秒，也可能在写盘
+  /// 完成前就超时返回 null。Completer 让所有等待者精确地在完成那一刻醒来。
+  Completer<String?>? _materializing;
 
   /// 级联文件是否已落盘（不代表后台 isolate 里已加载）。
   bool get isReady => _cascadePath != null;
 
   /// 确保级联 XML 已写进应用支持目录，返回其绝对路径；失败返回 null。
   /// 可重复调用，路径会被缓存。
-  Future<String?> ensureCascadeFile() async {
-    if (_cascadePath != null) return _cascadePath;
-    if (_materializing) {
-      // 已经有人在写，等它完成
-      for (var i = 0; i < 100 && _materializing; i++) {
-        await Future<void>.delayed(const Duration(milliseconds: 50));
-      }
-      return _cascadePath;
-    }
+  Future<String?> ensureCascadeFile() {
+    if (_cascadePath != null) return Future<String?>.value(_cascadePath);
+    final pending = _materializing;
+    if (pending != null) return pending.future;
 
-    _materializing = true;
-    try {
-      final dir = await getApplicationSupportDirectory();
-      final target =
-          File('${dir.path}${Platform.pathSeparator}lbpcascade_animeface.xml');
-      if (!await target.exists()) {
-        final data = await rootBundle.load(AppConstants.cascadeAsset);
-        await target.parent.create(recursive: true);
-        await target.writeAsBytes(data.buffer.asUint8List(), flush: true);
+    final completer = Completer<String?>();
+    _materializing = completer;
+    // 用独立的 async 闭包驱动落盘，本方法同步返回共享 Future。
+    () async {
+      try {
+        final dir = await getApplicationSupportDirectory();
+        final target =
+            File('${dir.path}${Platform.pathSeparator}lbpcascade_animeface.xml');
+        if (!await target.exists()) {
+          final data = await rootBundle.load(AppConstants.cascadeAsset);
+          await target.parent.create(recursive: true);
+          await target.writeAsBytes(data.buffer.asUint8List(), flush: true);
+        }
+        _cascadePath = target.path;
+        completer.complete(target.path);
+      } catch (_) {
+        completer.complete(null);
+      } finally {
+        _materializing = null;
       }
-      _cascadePath = target.path;
-      return target.path;
-    } catch (_) {
-      return null;
-    } finally {
-      _materializing = false;
-    }
+    }();
+    return completer.future;
   }
 
   /// 对图片字节做检测，返回 **该图片自身坐标系** 下的人脸矩形。
@@ -118,19 +123,60 @@ class AnimeFaceDetector {
     required int minNeighbors,
     required int minSize,
   }) {
-    cv.CascadeClassifier? cascade;
     cv.Mat? mat;
+    try {
+      // LBP 级联只吃灰度图，转灰度同时提速
+      mat = cv.imdecode(bytes, cv.IMREAD_GRAYSCALE);
+      if (mat.isEmpty) return Float64List(0);
+      return detectOnDecodedMat(
+        mat,
+        cascadePath: cascadePath,
+        scaleFactor: scaleFactor,
+        minNeighbors: minNeighbors,
+        minSize: minSize,
+      );
+    } catch (_) {
+      return Float64List(0);
+    } finally {
+      mat?.dispose();
+    }
+  }
+
+  /// 在「已解码 Mat 所在的 isolate」内直接做检测，不再重新解码图片。
+  ///
+  /// 为什么单独暴露它：壁纸管线把「解码→检测→裁剪→JPEG」合并进同一个
+  /// Isolate.run 以省掉第二次全量解码，此时手里已经是 Mat 而不是字节，
+  /// 不能再走 [detectFromBytes]（那会再 imdecode 一次）。这里复用同一套
+  /// 级联加载与 detectMultiScale 参数，保证两条路径检测结果一致。
+  ///
+  /// [mat] 可以是彩色或灰度：非灰度会内部转灰度（不修改入参）。
+  /// 返回平坦的 (x,y,w,h)*n 数组，坐标系为 [mat] 自身；失败/无脸返回空数组。
+  /// 调用方负责 [mat] 的释放，本方法只释放自己新建的灰度副本与级联句柄。
+  static Float64List detectOnDecodedMat(
+    cv.Mat mat, {
+    required String cascadePath,
+    double scaleFactor = AppConstants.faceDetectScaleFactor,
+    int minNeighbors = AppConstants.faceDetectMinNeighbors,
+    int minSize = AppConstants.faceDetectMinSize,
+  }) {
+    cv.CascadeClassifier? cascade;
+    cv.Mat? gray;
     cv.VecRect? rects;
+    var ownsGray = false;
     try {
       cascade = cv.CascadeClassifier.empty();
       if (!cascade.load(cascadePath)) return Float64List(0);
 
-      // LBP 级联只吃灰度图，转灰度同时提速
-      mat = cv.imdecode(bytes, cv.IMREAD_GRAYSCALE);
-      if (mat.isEmpty) return Float64List(0);
+      if (mat.channels == 1) {
+        gray = mat;
+      } else {
+        gray = cv.cvtColor(mat, cv.COLOR_BGR2GRAY);
+        ownsGray = true;
+      }
+      if (gray.isEmpty) return Float64List(0);
 
       rects = cascade.detectMultiScale(
-        mat,
+        gray,
         scaleFactor: scaleFactor,
         minNeighbors: minNeighbors,
         minSize: (minSize, minSize),
@@ -150,7 +196,7 @@ class AnimeFaceDetector {
       return Float64List(0);
     } finally {
       rects?.dispose();
-      mat?.dispose();
+      if (ownsGray) gray?.dispose();
       cascade?.dispose();
     }
   }
